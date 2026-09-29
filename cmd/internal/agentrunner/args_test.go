@@ -28,9 +28,6 @@ func TestRunMainRequestSources(t *testing.T) {
 		{name: "positional after separator", args: []string{"--", `{"prompt":"after separator"}`}, want: []string{"after separator"}},
 		{name: "prompt", args: []string{"-p", "plain prompt"}, want: []string{"plain prompt"}},
 		{name: "prompt equals", args: []string{"-p=plain prompt"}, want: []string{"plain prompt"}},
-		{name: "empty prompt on stdin", stdin: `{"prompt":""}`, want: []string{""}},
-		{name: "empty positional prompt", args: []string{`{"prompt":""}`}, want: []string{""}},
-		{name: "empty prompt flag", args: []string{"-p", ""}, want: []string{""}},
 		{name: "quoted multiline prompt", args: []string{"-p", "  say \"hello\"\nC:\\work\t世界  "}, want: []string{"  say \"hello\"\nC:\\work\t世界  "}},
 		{name: "JSON text as prompt", args: []string{"-p", `{"messages":[]}`}, want: []string{`{"messages":[]}`}},
 	} {
@@ -85,6 +82,10 @@ func TestRunMainRejectsInvalidRequestArguments(t *testing.T) {
 		{name: "unknown field", args: []string{`{"prompt":"hello","unknown":true}`}, want: "unknown object member"},
 		{name: "empty argument", args: []string{""}, want: "empty input"},
 		{name: "invalid request", args: []string{`{"messages":[]}`}, want: "messages must not be empty"},
+		{name: "empty positional prompt", args: []string{`{"prompt":""}`}, want: "prompt must not be empty"},
+		{name: "empty prompt flag", args: []string{"-p", ""}, want: "prompt must not be empty"},
+		{name: "whitespace prompt", args: []string{"-p", "   "}, want: "prompt must not be empty"},
+		{name: "empty message content", args: []string{`{"messages":[{"content":""}]}`}, want: "messages[0].content must not be empty"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer

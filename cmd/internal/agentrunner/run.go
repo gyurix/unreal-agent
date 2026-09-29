@@ -625,6 +625,9 @@ func validateRequest(parsed Request) ([]RequestMessage, error) {
 		if parsed.Prompt == nil {
 			return nil, errors.New("messages must be set")
 		}
+		if strings.TrimSpace(*parsed.Prompt) == "" {
+			return nil, errors.New("prompt must not be empty")
+		}
 		return []RequestMessage{{Content: *parsed.Prompt}}, nil
 	}
 	if len(parsed.Messages) == 0 {
@@ -633,6 +636,9 @@ func validateRequest(parsed Request) ([]RequestMessage, error) {
 	for index, message := range parsed.Messages {
 		if message.Role != "" && message.Role != "user" {
 			return nil, fmt.Errorf("messages[%d].role must be user", index)
+		}
+		if strings.TrimSpace(message.Content) == "" {
+			return nil, fmt.Errorf("messages[%d].content must not be empty", index)
 		}
 		if message.MessageID != nil && strings.TrimSpace(*message.MessageID) == "" {
 			return nil, fmt.Errorf("messages[%d].message_id must not be empty", index)

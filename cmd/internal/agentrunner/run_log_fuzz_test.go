@@ -27,7 +27,7 @@ import (
 func FuzzRunLogMatchesExecution(f *testing.F) {
 	addLogFuzzSeeds(f)
 	f.Fuzz(func(t *testing.T, actions []byte, text string, input, cached, written, output, reasoning uint64) {
-		if len(actions) > 16 || len(text) > 128<<10 || len(actions)*len(text) > 256<<10 {
+		if len(actions) > 16 || len(text) > 128<<10 || len(actions)*len(text) > 256<<10 || strings.TrimSpace(text) == "" {
 			t.Skip()
 		}
 		synctest.Test(t, func(t *testing.T) {

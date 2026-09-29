@@ -568,7 +568,8 @@ func TestReasoningEffortMapsEveryThinkingLevel(t *testing.T) {
 		}
 	}
 	for _, level := range []string{"xhigh", "max"} {
-		if _, err := validateRequest(Request{Prompt: new(string), ThinkingLevel: level}); err != nil {
+		prompt := "hello"
+		if _, err := validateRequest(Request{Prompt: &prompt, ThinkingLevel: level}); err != nil {
 			t.Errorf("validateRequest(thinking_level=%q) = %v, want nil", level, err)
 		}
 	}
