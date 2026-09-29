@@ -44,12 +44,7 @@ const (
 	llmMaxAttemptsEnvironment = "UNREAL_HARNESS_LLM_MAX_ATTEMPTS"
 )
 
-const defaultSystemPrompt = `You are an AI agent running inside an isolated sandbox container.
-
-## Guidelines
-- Save output files to the workspace root.
-- For large datasets, inspect a sample first before processing everything.
-`
+const defaultSystemPrompt = ""
 
 type Client interface {
 	llm.Adapter
@@ -401,6 +396,12 @@ func Run(
 		}
 	}()
 	registry := configuredTools.Registry
+	if selected.Name == "opencode-zen" {
+		registry, err = newZenTools(registry)
+		if err != nil {
+			return err
+		}
+	}
 	if _, enabled := registry.Resolve(tool.SkillUseName); enabled {
 		for _, skill := range skills {
 			if _, err := registry.RegisterSkill(skill); err != nil {

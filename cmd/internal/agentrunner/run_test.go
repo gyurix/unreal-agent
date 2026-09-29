@@ -714,11 +714,11 @@ func TestRunMainComposesSystemPrompt(t *testing.T) {
 		request string
 		want    string
 	}{
-		{name: "defaults", request: `{"prompt":"hello"}`, want: preamble + "\n\n" + strings.TrimSpace(defaultSystemPrompt)},
+		{name: "defaults", request: `{"prompt":"hello"}`, want: preamble},
 		{
 			name:    "append to default",
 			request: `{"prompt":"hello","system_prompt_append":"Use tabs."}`,
-			want:    preamble + "\n\n" + strings.TrimSpace(defaultSystemPrompt) + "\n\nUse tabs.",
+			want:    preamble + "\n\nUse tabs.",
 		},
 		{
 			name:    "append to override",
