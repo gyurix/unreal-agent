@@ -2,6 +2,7 @@ package agentrunner
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json/v2"
 	"errors"
@@ -99,9 +100,14 @@ type defaultPrompts struct {
 	SystemPrompt  string `json:"system_prompt"`
 }
 
+// errorEvent is the final stdout line of a failed run. Provider failures also
+// carry the provider code, whether retrying may succeed, and any retry hint.
 type errorEvent struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
+	Type              string `json:"type"`
+	Message           string `json:"message"`
+	Code              string `json:"code,omitempty"`
+	Retryable         *bool  `json:"retryable,omitempty"`
+	RetryAfterSeconds int64  `json:"retry_after_seconds,omitzero"`
 }
 
 type sessionObserver struct {
@@ -133,7 +139,13 @@ func RunMain(
 	if context.Cause(ctx) != nil {
 		return 130
 	}
-	encoded, encodeErr := json.Marshal(errorEvent{Type: "error", Message: err.Error()})
+	event := errorEvent{Type: "error", Message: err.Error()}
+	if apiErr, ok := errors.AsType[*responsesapi.APIError](err); ok {
+		event.Code = cmp.Or(apiErr.Code, apiErr.Type)
+		event.Retryable = &apiErr.Retryable
+		event.RetryAfterSeconds = int64((apiErr.RetryAfter + time.Second - 1) / time.Second)
+	}
+	encoded, encodeErr := json.Marshal(event)
 	if encodeErr != nil {
 		err = errors.Join(err, fmt.Errorf("encode error event: %w", encodeErr))
 	} else if _, writeErr := fmt.Fprintf(output, "%s\n", encoded); writeErr != nil {

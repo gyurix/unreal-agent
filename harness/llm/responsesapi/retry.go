@@ -27,7 +27,7 @@ func retryableResponseError(err *APIError, retryableStatuses []int) bool {
 		return false
 	}
 	switch err.Type {
-	case "authentication_error", "permission_error", "insufficient_quota":
+	case "authentication_error", "permission_error", "insufficient_quota", "usage_limit_reached", "usage_not_included":
 		return false
 	}
 	if err.StatusCode < http.StatusOK || err.StatusCode >= http.StatusMultipleChoices {
@@ -37,11 +37,7 @@ func retryableResponseError(err *APIError, retryableStatuses []int) bool {
 }
 
 func responseRetryDelay(policy primitives.RemoteRetryPolicy, attempt int, err *APIError, headers http.Header, now time.Time, jitter float64) time.Duration {
-	hint := retryAfterHeader(headers.Get("Retry-After"), now)
-	if err != nil && err.Code == "rate_limit_exceeded" {
-		hint = max(hint, retryAfterMessage(err.Message))
-	}
-	if hint > 0 {
+	if hint := retryAfterHint(err, headers, now); hint > 0 {
 		return min(hint, policy.MaxBackoff)
 	}
 	if err != nil && (err.Code == "server_is_overloaded" || err.Code == "slow_down") {
@@ -51,6 +47,15 @@ func responseRetryDelay(policy primitives.RemoteRetryPolicy, attempt int, err *A
 	}
 	delay := policy.Backoff(attempt)
 	return delay - time.Duration(float64(delay/5)*jitter)
+}
+
+// retryAfterHint returns how long the provider asked the client to wait, or zero.
+func retryAfterHint(err *APIError, headers http.Header, now time.Time) time.Duration {
+	hint := retryAfterHeader(headers.Get("Retry-After"), now)
+	if err != nil && err.Code == "rate_limit_exceeded" {
+		hint = max(hint, retryAfterMessage(err.Message))
+	}
+	return hint
 }
 
 func retryAfterHeader(value string, now time.Time) time.Duration {

@@ -386,6 +386,9 @@ func TestRunMainEmitsValidationError(t *testing.T) {
 	if got := eventTypes(t, stdout.String()); !slices.Equal(got, []string{"error"}) {
 		t.Fatalf("event types = %#v", got)
 	}
+	if strings.Contains(stdout.String(), "retryable") {
+		t.Fatalf("validation error carries provider failure fields: %s", stdout.String())
+	}
 	if !strings.Contains(stderr.String(), "thinking_level must be one of") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}

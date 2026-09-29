@@ -33,6 +33,7 @@ func TestRetryableResponseErrorCodes(t *testing.T) {
 		{name: "bad request type is not trusted in-band", err: &APIError{StatusCode: 200, Code: "server_error", Type: "invalid_request_error"}, want: true},
 		{name: "authentication type", err: &APIError{StatusCode: 503, Type: "authentication_error"}},
 		{name: "permission type", err: &APIError{StatusCode: 429, Type: "permission_error"}},
+		{name: "Codex usage limit type", err: &APIError{StatusCode: 429, Type: "usage_limit_reached"}},
 		{name: "unauthorized status", err: &APIError{StatusCode: 401, Code: "rate_limit_exceeded"}},
 		{name: "redirect", err: &APIError{StatusCode: 307}},
 	} {

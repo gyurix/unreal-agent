@@ -30,6 +30,10 @@ Request schema (JSON object; unknown fields are rejected):
     Static tool names excluded from model context and execution.
   extra_allowed_tools: array of non-empty strings (optional; accepted but ignored)
   include_partial_messages: boolean (optional; accepted but ignored)
+
+A failed run ends stdout with {type: "error", message: string}. Provider failures
+also carry code (when known), retryable, and retry_after_seconds (when the
+provider sent a Retry-After or "try again in" hint).
 `
 
 func writeUsage(flags *flag.FlagSet) error {

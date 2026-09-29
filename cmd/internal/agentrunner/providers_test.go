@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -107,5 +108,64 @@ func TestRunnerCodexUsesSubscriptionWithoutAPIKey(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "subscription-token") {
 		t.Fatal("credential leaked into session output")
+	}
+}
+
+func TestRunnerReportsTerminalProviderFailure(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		retryAfter string
+		body       string
+		want       map[string]any
+	}{
+		{
+			name: "rate limit", retryAfter: "30",
+			body: `{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached."}}`,
+			want: map[string]any{"type": "error", "code": "rate_limit_exceeded", "retryable": true, "retry_after_seconds": 30.0},
+		},
+		{
+			name: "rate limit message hint",
+			body: `{"error":{"code":"rate_limit_exceeded","message":"Please try again in 1.2s."}}`,
+			want: map[string]any{"type": "error", "code": "rate_limit_exceeded", "retryable": true, "retry_after_seconds": 2.0},
+		},
+		{
+			name: "usage limit",
+			body: `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}`,
+			want: map[string]any{"type": "error", "code": "usage_limit_reached", "retryable": false},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				if test.retryAfter != "" {
+					writer.Header().Set("Retry-After", test.retryAfter)
+				}
+				writer.WriteHeader(http.StatusTooManyRequests)
+				_, _ = io.WriteString(writer, test.body)
+			}))
+			defer server.Close()
+			var stdout, stderr strings.Builder
+			code := RunMain(t.Context(), []string{"-workspace", t.TempDir(), "-session-directory", t.TempDir()}, func(name string) string {
+				return map[string]string{
+					"UNREAL_HARNESS_LLM_BASE_URL": server.URL,
+					"UNREAL_HARNESS_LLM_API_KEY":  "test-key",
+				}[name]
+			}, func() []string { return nil }, strings.NewReader(`{"prompt":"hello","model":"test","max_attempts":1}`),
+				&stdout, &stderr, Config{Name: "unreal-agent-runner", ParseRequest: parseTestRequest, Providers: DefaultProviders()})
+			if code != 1 {
+				t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+			}
+			lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+			var got map[string]any
+			if err := json.Unmarshal([]byte(lines[len(lines)-1]), &got); err != nil {
+				t.Fatal(err)
+			}
+			if message, _ := got["message"].(string); !strings.Contains(message, "create response: responses API") {
+				t.Fatalf("message = %q", message)
+			}
+			delete(got, "message")
+			if !maps.Equal(got, test.want) {
+				t.Fatalf("error event = %v, want %v", got, test.want)
+			}
+		})
 	}
 }

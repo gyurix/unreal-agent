@@ -26,6 +26,10 @@ type APIError struct {
 	Message    string
 	Param      string
 	Type       string
+	// Retryable and RetryAfter describe the final attempt once retries stop.
+	// RetryAfter is the provider's Retry-After or "try again in" hint, or zero.
+	Retryable  bool
+	RetryAfter time.Duration
 }
 
 func (err *APIError) Error() string {
@@ -113,7 +117,7 @@ func (adapter *adapter) Respond(ctx context.Context, request llm.Request, option
 	if err != nil {
 		return llm.Response{}, err
 	}
-	statusCode, responseBody, err := adapter.exchange(ctx, body, key)
+	statusCode, responseBody, apiError, err := adapter.exchange(ctx, body, key)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -121,7 +125,10 @@ func (adapter *adapter) Respond(ctx context.Context, request llm.Request, option
 		adapter.trace(Exchange{RequestBody: body, StatusCode: statusCode, ResponseBody: responseBody})
 	}
 	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
-		return llm.Response{}, fmt.Errorf("create response: %w", providerError(statusCode, responseBody))
+		if apiError == nil {
+			apiError = providerError(statusCode, responseBody)
+		}
+		return llm.Response{}, fmt.Errorf("create response: %w", apiError)
 	}
 	return decodeResponse(responseBody)
 }
