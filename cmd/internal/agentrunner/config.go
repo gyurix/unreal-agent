@@ -14,6 +14,9 @@ type Config struct {
 	Name         string
 	Providers    []Provider
 	ParseRequest func(io.Reader) (Request, ToolFactory, error)
+	// TaskExecutable is the runner binary used for durable child sessions.
+	// Empty disables the task tool for embedders that cannot run this CLI.
+	TaskExecutable string
 }
 
 type ToolConfig struct {

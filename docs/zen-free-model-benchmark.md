@@ -73,7 +73,7 @@ OpenCode custom and default envelopes sent roughly 8.2× and 11.1× as many
 first-turn input tokens as this runner. This primarily reflects tool schemas
 and built-in context, not just the system prompt; cache treatment differs.
 
-The runner's first two independent `bash` calls raced: the write ran before
+In the pre-Task runner benchmark, the first two independent `bash` calls raced: the write ran before
 `mkdir` and failed with exit code 1. The model noticed and repaired step 2.
 All ten agent-named folders and copies were made and later removed, but the
 runner launched **zero actual subagents**. It used parallel shell commands and
@@ -88,14 +88,38 @@ the same through `/responses`. This proves tool execution and continuation,
 not merely accepted tool schemas. The full Go test suite, race suite, vet,
 format check, and build passed after integration.
 
+## Native Task implementation — 2026-09-29
+
+The CLI now exposes a real `task` tool backed by isolated child runner
+processes and durable `task-<operation-id>` sessions; no OpenCode installation
+is involved. The tool is omitted from child requests, so nesting cannot run
+away. A process semaphore allows ten concurrent children, with at most 64
+pending operations. Parent operations record child handles, final answers,
+provider-reported child token usage, and concrete failures. Parent shutdown
+interrupts active children.
+
+Direct execution checks after this change:
+
+| Check | Observed result |
+| --- | --- |
+| Local SSE provider, ten `task` calls | Parent exit 0; ten separate child session files; peak ten concurrent child HTTP requests; `task` absent from child tool schemas. |
+| Local SSE provider, child HTTP 400 | Child failure appeared in parent tool result; parent exit 0 after handling it. No fake success. |
+| Live Zen `mimo-v2.6-flash-free`, one Task | Parent exit 0; one persisted child session; final answer quoted child `Ready.`; no 403. |
+| Exact 661-byte prompt, live Zen | Fifteen child session files created; timed out at 210 seconds. The requested `/tmp/test-agentic-work` path was absent afterward. No whole-task success, speed, token, or absence-of-403 claim can be made for this run. |
+
+The previous table remains **pre-Task** baseline evidence and must not be
+read as a speed/token comparison for the new implementation. A controlled
+end-to-end rerun, including all child token usage and failure counts, is still
+needed before drawing performance conclusions.
+
 ## Next actions
 
-1. Implement a durable `Task` subagent tool and structured parent/child
-   tracking. Until then, reject or explicitly qualify requests requiring real
-   agents; do not equate shell jobs with agents.
-2. Make tool-dependency scheduling explicit. `mkdir` and file write must not
+1. Make tool-dependency scheduling explicit. `mkdir` and file write must not
    be parallel; the observed first-turn race cost a repair turn.
-3. Keep per-model endpoint routing and a current free-model availability
+2. Keep per-model endpoint routing and a current free-model availability
    probe. Do not retry Jev as chat or treat upstream 400 as a gate failure.
-4. Run repeated, isolated benchmarks with warm/cold cache separation and
+3. Run repeated, isolated benchmarks with warm/cold cache separation and
    include Task subagent usage before claiming a speed or token advantage.
+4. Investigate the 210-second exact-prompt timeout with a persisted root
+   trace and bounded per-task wall time; avoid model-generated sleeps before
+   claiming reliable full-task completion.

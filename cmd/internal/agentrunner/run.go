@@ -402,6 +402,24 @@ func Run(
 			return err
 		}
 	}
+	if config.TaskExecutable != "" && getenv("UNREAL_AGENT_TASK_DEPTH") == "" &&
+		!slices.Contains(parsed.DisallowedTools, taskToolName) {
+		handler := newTaskHandler(runContext, taskRunnerConfig{
+			Executable: config.TaskExecutable, Workspace: workspace, SessionDirectory: storeDirectory,
+			Provider: selected.Name, BaseURL: configuredBaseURL, Model: model,
+			MaxAttempts: maxAttempts, Request: parsed,
+		})
+		registry = &taskRegistry{Registry: registry, translator: taskTranslator{}}
+		configuredTools.RemoteJobs = append(configuredTools.RemoteJobs, handler)
+		previousClose := configuredTools.Close
+		configuredTools.Close = func() error {
+			handler.Close()
+			if previousClose != nil {
+				return previousClose()
+			}
+			return nil
+		}
+	}
 	if _, enabled := registry.Resolve(tool.SkillUseName); enabled {
 		for _, skill := range skills {
 			if _, err := registry.RegisterSkill(skill); err != nil {
