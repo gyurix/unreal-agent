@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -30,6 +31,10 @@ type APIError struct {
 	// RetryAfter is the provider's Retry-After or "try again in" hint, or zero.
 	Retryable  bool
 	RetryAfter time.Duration
+
+	// Codex usage limits report when the limit resets instead of Retry-After.
+	resetsIn time.Duration
+	resetsAt time.Time
 }
 
 func (err *APIError) Error() string {
@@ -177,16 +182,26 @@ func providerError(statusCode int, body []byte) *APIError {
 			Message string  `json:"message"`
 			Param   *string `json:"param"`
 			Type    string  `json:"type"`
+
+			ResetsInSeconds float64 `json:"resets_in_seconds"`
+			ResetsAt        float64 `json:"resets_at"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &envelope); err == nil && (envelope.Error.Message != "" || dereference(envelope.Error.Code) != "") {
-		return &APIError{
+		apiError := &APIError{
 			StatusCode: statusCode,
 			Code:       dereference(envelope.Error.Code),
 			Message:    envelope.Error.Message,
 			Param:      dereference(envelope.Error.Param),
 			Type:       envelope.Error.Type,
 		}
+		if seconds := envelope.Error.ResetsInSeconds; seconds > 0 && seconds < float64(math.MaxInt64/time.Second) {
+			apiError.resetsIn = time.Duration(seconds * float64(time.Second))
+		}
+		if seconds := envelope.Error.ResetsAt; seconds > 0 && seconds < float64(math.MaxInt64/time.Second) {
+			apiError.resetsAt = time.Unix(int64(seconds), 0)
+		}
+		return apiError
 	}
 
 	message := strings.TrimSpace(string(body))

@@ -52,8 +52,17 @@ func responseRetryDelay(policy primitives.RemoteRetryPolicy, attempt int, err *A
 // retryAfterHint returns how long the provider asked the client to wait, or zero.
 func retryAfterHint(err *APIError, headers http.Header, now time.Time) time.Duration {
 	hint := retryAfterHeader(headers.Get("Retry-After"), now)
-	if err != nil && err.Code == "rate_limit_exceeded" {
+	if err == nil {
+		return hint
+	}
+	if err.Code == "rate_limit_exceeded" {
 		hint = max(hint, retryAfterMessage(err.Message))
+	}
+	if hint == 0 && err.resetsIn > 0 {
+		return err.resetsIn
+	}
+	if hint == 0 && !err.resetsAt.IsZero() {
+		return max(0, err.resetsAt.Sub(now))
 	}
 	return hint
 }

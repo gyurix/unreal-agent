@@ -131,8 +131,8 @@ func TestRunnerReportsTerminalProviderFailure(t *testing.T) {
 		},
 		{
 			name: "usage limit",
-			body: `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}`,
-			want: map[string]any{"type": "error", "code": "usage_limit_reached", "retryable": false},
+			body: `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_in_seconds":5400}}`,
+			want: map[string]any{"type": "error", "code": "usage_limit_reached", "retryable": false, "retry_after_seconds": 5400.0},
 		},
 		{
 			name: "streamed response failure", stream: true,

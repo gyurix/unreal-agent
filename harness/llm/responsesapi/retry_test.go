@@ -200,6 +200,17 @@ func TestAdapterReportsFinalRetryHint(t *testing.T) {
 			wantCode: "insufficient_quota",
 		},
 		{
+			name: "Codex usage limit reset", status: http.StatusTooManyRequests,
+			body: `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus",` +
+				`"resets_at":` + strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10) + `,"resets_in_seconds":3600}}`,
+			wantHint: time.Hour,
+		},
+		{
+			name: "Codex usage limit Retry-After wins", status: http.StatusTooManyRequests, retryAfter: "60",
+			body:     `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":3600}}`,
+			wantHint: time.Minute,
+		},
+		{
 			name: "in-band stream error", status: http.StatusOK,
 			body:     "data: {\"type\":\"error\",\"code\":\"rate_limit_exceeded\",\"message\":\"Please try again in 2s.\"}\n\n",
 			wantCode: "rate_limit_exceeded", wantRetryable: true, wantHint: 2 * time.Second,
@@ -226,5 +237,16 @@ func TestAdapterReportsFinalRetryHint(t *testing.T) {
 				t.Fatalf("error = %#v (%v), want code %q, retryable %v, retry after %v", apiError, err, test.wantCode, test.wantRetryable, test.wantHint)
 			}
 		})
+	}
+}
+
+func TestRetryAfterHintUsesCodexResetTime(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	err := providerError(http.StatusTooManyRequests, []byte(`{"error":{"type":"usage_limit_reached","message":"limit","resets_at":1700000090}}`))
+	if got := retryAfterHint(err, nil, now); got != 90*time.Second {
+		t.Fatalf("hint = %v, want 90s", got)
+	}
+	if got := retryAfterHint(err, nil, now.Add(time.Hour)); got != 0 {
+		t.Fatalf("hint after reset = %v, want 0", got)
 	}
 }
