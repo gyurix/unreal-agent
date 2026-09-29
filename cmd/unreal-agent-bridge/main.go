@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"net/http"
@@ -30,7 +31,7 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "unreal-agent-bridge: %v\n", err)
 		return 1
 	}
-	client, err := config.provider.NewClient(config.apiKey, config.baseURL, config.maxAttempts, os.Getenv)
+	client, err := config.provider.NewClient(config.apiKey, config.baseURL, config.maxAttempts, os.Getenv, config.providerRouting)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unreal-agent-bridge: create %s client: %v\n", config.provider.Name, err)
 		return 1
@@ -72,14 +73,15 @@ func run() int {
 }
 
 type serverConfig struct {
-	provider     agentrunner.Provider
-	apiKey       string
-	baseURL      string
-	maxAttempts  int
-	models       []string
-	defaultModel string
-	addr         string
-	bridgeAPIKey string
+	provider        agentrunner.Provider
+	apiKey          string
+	baseURL         string
+	maxAttempts     int
+	providerRouting jsontext.Value
+	models          []string
+	defaultModel    string
+	addr            string
+	bridgeAPIKey    string
 }
 
 func loadConfig(getenv func(string) string) (serverConfig, error) {
@@ -138,14 +140,15 @@ func loadConfig(getenv func(string) string) (serverConfig, error) {
 		return serverConfig{}, errors.New("BRIDGE_MODELS or UNREAL_HARNESS_LLM_MODEL must list at least one model")
 	}
 	return serverConfig{
-		provider:     *selected,
-		apiKey:       apiKey,
-		baseURL:      baseURL,
-		maxAttempts:  maxAttempts,
-		models:       models,
-		defaultModel: models[0],
-		addr:         firstNonEmpty(getenv("BRIDGE_ADDR"), "127.0.0.1:8080"),
-		bridgeAPIKey: strings.TrimSpace(getenv("BRIDGE_API_KEY")),
+		provider:        *selected,
+		apiKey:          apiKey,
+		baseURL:         baseURL,
+		maxAttempts:     maxAttempts,
+		providerRouting: nil,
+		models:          models,
+		defaultModel:    models[0],
+		addr:            firstNonEmpty(getenv("BRIDGE_ADDR"), "127.0.0.1:8080"),
+		bridgeAPIKey:    strings.TrimSpace(getenv("BRIDGE_API_KEY")),
 	}, nil
 }
 

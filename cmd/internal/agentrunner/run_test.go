@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 	"uuid"
 
@@ -169,7 +171,7 @@ func TestRunMainUsesProviderAuthenticationConfiguration(t *testing.T) {
 			created := false
 			providers := []Provider{{
 				Name: "custom", DefaultModel: "test-model", APIKeyEnvironment: test.keyEnvironment,
-				NewClient: func(apiKey, _ string, _ int, _ func(string) string) (Client, error) {
+				NewClient: func(apiKey, _ string, _ int, _ func(string) string, _ jsontext.Value) (Client, error) {
 					created = true
 					if apiKey != test.wantKey {
 						return nil, errors.New("unexpected API key")
@@ -209,14 +211,14 @@ func TestRunMainUsesLLMConfigurationFromEnvironment(t *testing.T) {
 		{
 			Name:              "openai",
 			APIKeyEnvironment: "OPENAI_API_KEY",
-			NewClient: func(_ string, _ string, _ int, _ func(string) string) (Client, error) {
+			NewClient: func(_ string, _ string, _ int, _ func(string) string, _ jsontext.Value) (Client, error) {
 				return nil, errors.New("default provider selected")
 			},
 		},
 		{
 			Name: "openrouter", BaseURL: "https://default.example/v1", DefaultModel: "router-model",
 			APIKeyEnvironment: "OPENROUTER_API_KEY",
-			NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string) (Client, error) {
+			NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string, _ jsontext.Value) (Client, error) {
 				if apiKey != "custom-secret" || baseURL != "https://custom.example/v1" || maxAttempts != 2 {
 					return nil, errors.New("unexpected OpenRouter configuration")
 				}
@@ -384,6 +386,9 @@ func TestRunMainEmitsValidationError(t *testing.T) {
 	if got := eventTypes(t, stdout.String()); !slices.Equal(got, []string{"error"}) {
 		t.Fatalf("event types = %#v", got)
 	}
+	if strings.Contains(stdout.String(), "retryable") {
+		t.Fatalf("validation error carries provider failure fields: %s", stdout.String())
+	}
 	if !strings.Contains(stderr.String(), "thinking_level must be one of") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
@@ -457,7 +462,7 @@ func testConfig(client Client) Config {
 		Name: "openai", BaseURL: "https://example.com",
 		DefaultModel:      "gpt-default",
 		APIKeyEnvironment: "OPENAI_API_KEY",
-		NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string) (Client, error) {
+		NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string, _ jsontext.Value) (Client, error) {
 			if apiKey != "secret" || baseURL != "https://example.com" || maxAttempts != 5 {
 				return nil, errors.New("unexpected provider configuration")
 			}
@@ -568,7 +573,8 @@ func TestReasoningEffortMapsEveryThinkingLevel(t *testing.T) {
 		}
 	}
 	for _, level := range []string{"xhigh", "max"} {
-		if _, err := validateRequest(Request{Prompt: new(string), ThinkingLevel: level}); err != nil {
+		prompt := "hello"
+		if _, err := validateRequest(Request{Prompt: &prompt, ThinkingLevel: level}); err != nil {
 			t.Errorf("validateRequest(thinking_level=%q) = %v, want nil", level, err)
 		}
 	}
@@ -698,5 +704,91 @@ func TestResolveSessionDirectoryRejectsMissingStateLocation(t *testing.T) {
 				t.Fatalf("error = %v, want actionable state location error", err)
 			}
 		})
+	}
+}
+
+func TestRunMainComposesSystemPrompt(t *testing.T) {
+	preamble := contextbuilder.DefaultPreamble()
+	for _, test := range []struct {
+		name    string
+		request string
+		want    string
+	}{
+		{name: "defaults", request: `{"prompt":"hello"}`, want: preamble},
+		{
+			name:    "append to default",
+			request: `{"prompt":"hello","system_prompt_append":"Use tabs."}`,
+			want:    preamble + "\n\nUse tabs.",
+		},
+		{
+			name:    "append to override",
+			request: `{"prompt":"hello","system_prompt":"Be concise.","system_prompt_append":"Use tabs."}`,
+			want:    preamble + "\n\nBe concise.\n\nUse tabs.",
+		},
+		{
+			name:    "append to empty override",
+			request: `{"prompt":"hello","system_prompt":"","system_prompt_append":"Use tabs."}`,
+			want:    preamble + "\n\nUse tabs.",
+		},
+		{
+			name:    "preamble override",
+			request: `{"prompt":"hello","preamble":"Custom preamble.","system_prompt":"Be concise."}`,
+			want:    "Custom preamble.\n\nBe concise.",
+		},
+		{name: "empty preamble keeps default", request: `{"prompt":"hello","preamble":"","system_prompt":"Be concise."}`, want: preamble + "\n\nBe concise."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := make(chan llm.Request, 1)
+			client := &fakeClient{respond: func(_ context.Context, request llm.Request) (llm.Response, error) {
+				requests <- request
+				return llm.Response{Output: []llm.Item{{
+					Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "done"},
+				}}}, nil
+			}}
+			var stdout, stderr bytes.Buffer
+			code := RunMain(t.Context(), []string{"-workspace", t.TempDir(), "-session-directory", t.TempDir()}, func(name string) string {
+				if name == llmAPIKeyEnvironment {
+					return "secret"
+				}
+				return ""
+			}, func() []string { return nil }, strings.NewReader(test.request), &stdout, &stderr, testConfig(client))
+			if code != 0 {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+			}
+			request := <-requests
+			if got := request.Input[0].Data.(llm.Message); got.Role != llm.RoleSystem || got.Text != test.want {
+				t.Fatalf("system message = %#v, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRunMainPrintsDefaultPrompts(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := RunMain(t.Context(), []string{"-print-default-prompts"}, func(string) string {
+		t.Fatal("printing default prompts reached environment setup")
+		return ""
+	}, func() []string { return nil }, iotest.ErrReader(errors.New("stdin must not be read")), &stdout, &stderr,
+		Config{Name: "test-runner", ParseRequest: func(io.Reader) (Request, ToolFactory, error) {
+			t.Fatal("printing default prompts reached request parsing")
+			return Request{}, nil, nil
+		}})
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	var got map[string]string
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode %q: %v", stdout.String(), err)
+	}
+	want := map[string]string{"system_prompt": defaultSystemPrompt}
+	for key, path := range map[string]string{"preamble": "preamble.md", "skill_preamble": "skill-preamble.md"} {
+		embedded, err := os.ReadFile(filepath.Join("..", "..", "..", "harness", "contextbuilder", "prompts", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[key] = strings.TrimSpace(string(embedded))
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("default prompts = %#v, want %#v", got, want)
 	}
 }

@@ -28,9 +28,6 @@ func TestRunMainRequestSources(t *testing.T) {
 		{name: "positional after separator", args: []string{"--", `{"prompt":"after separator"}`}, want: []string{"after separator"}},
 		{name: "prompt", args: []string{"-p", "plain prompt"}, want: []string{"plain prompt"}},
 		{name: "prompt equals", args: []string{"-p=plain prompt"}, want: []string{"plain prompt"}},
-		{name: "empty prompt on stdin", stdin: `{"prompt":""}`, want: []string{""}},
-		{name: "empty positional prompt", args: []string{`{"prompt":""}`}, want: []string{""}},
-		{name: "empty prompt flag", args: []string{"-p", ""}, want: []string{""}},
 		{name: "quoted multiline prompt", args: []string{"-p", "  say \"hello\"\nC:\\work\t世界  "}, want: []string{"  say \"hello\"\nC:\\work\t世界  "}},
 		{name: "JSON text as prompt", args: []string{"-p", `{"messages":[]}`}, want: []string{`{"messages":[]}`}},
 	} {
@@ -85,6 +82,10 @@ func TestRunMainRejectsInvalidRequestArguments(t *testing.T) {
 		{name: "unknown field", args: []string{`{"prompt":"hello","unknown":true}`}, want: "unknown object member"},
 		{name: "empty argument", args: []string{""}, want: "empty input"},
 		{name: "invalid request", args: []string{`{"messages":[]}`}, want: "messages must not be empty"},
+		{name: "empty positional prompt", args: []string{`{"prompt":""}`}, want: "prompt must not be empty"},
+		{name: "empty prompt flag", args: []string{"-p", ""}, want: "prompt must not be empty"},
+		{name: "whitespace prompt", args: []string{"-p", "   "}, want: "prompt must not be empty"},
+		{name: "empty message content", args: []string{`{"messages":[{"content":""}]}`}, want: "messages[0].content must not be empty"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -163,11 +164,11 @@ func TestRunMainHelp(t *testing.T) {
 			}
 			for _, want := range []string{
 				"test-runner [options] < request.json", "test-runner [options] 'JSON request'", "test-runner [options] -p 'prompt'",
-				"-p prompt", "-workspace", "-session-directory", "-log-directory", "-tool-heartbeat-interval",
+				"-p prompt", "-workspace", "-session-directory", "-log-directory", "-tool-heartbeat-interval", "-print-default-prompts",
 				"$XDG_STATE_HOME/unreal-agent/sessions", "$HOME/.local/state/unreal-agent/sessions",
 				"optional session JSONL log directory; unset writes only to stdout",
 				"Request schema", "messages:", "role:", "content:", "message_id?:", "prompt:", "model:", "max_attempts:",
-				"system_prompt:", "thinking_level:", "session_id:", "disallowed_tools:", "extra_allowed_tools:", "include_partial_messages:",
+				"system_prompt:", "system_prompt_append:", "preamble:", "thinking_level:", "session_id:", "provider_routing:", "disallowed_tools:", "extra_allowed_tools:", "include_partial_messages:",
 			} {
 				if !strings.Contains(stderr.String(), want) {
 					t.Errorf("help missing %q: %s", want, stderr.String())

@@ -2,7 +2,9 @@ package agentrunner
 
 import (
 	"bytes"
+	"cmp"
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"flag"
@@ -54,13 +56,17 @@ type Provider struct {
 	BaseURL           string
 	DefaultModel      string
 	APIKeyEnvironment string // Empty delegates authentication to NewClient.
-	NewClient         func(apiKey, baseURL string, maxAttempts int, getenv func(string) string) (Client, error)
+	ProviderRouting   bool   // Accepts the request's provider_routing object.
+	// NewClient receives providerRouting only when ProviderRouting is set.
+	NewClient func(apiKey, baseURL string, maxAttempts int, getenv func(string) string, providerRouting jsontext.Value) (Client, error)
 }
 
 type Request struct {
 	Messages               []RequestMessage `json:"messages"`
 	Prompt                 *string          `json:"prompt"`
 	SystemPrompt           *string          `json:"system_prompt"`
+	SystemPromptAppend     string           `json:"system_prompt_append"`
+	Preamble               string           `json:"preamble"`
 	Model                  string           `json:"model"`
 	MaxAttempts            *int             `json:"max_attempts"`
 	SessionID              *string          `json:"session_id"`
@@ -68,6 +74,15 @@ type Request struct {
 	IncludePartialMessages *bool            `json:"include_partial_messages"`
 	ExtraAllowedTools      []string         `json:"extra_allowed_tools"`
 	DisallowedTools        []string         `json:"disallowed_tools"`
+	ProviderRouting        jsontext.Value   `json:"provider_routing,omitzero"`
+}
+
+// providerRouting returns the request's provider_routing, treating null as absent.
+func (parsed Request) providerRouting() jsontext.Value {
+	if parsed.ProviderRouting.Kind() == 'n' {
+		return nil
+	}
+	return parsed.ProviderRouting
 }
 
 type RequestMessage struct {
@@ -86,9 +101,21 @@ type environmentScope struct {
 	changes []environmentChange
 }
 
+type defaultPrompts struct {
+	Preamble      string `json:"preamble"`
+	SkillPreamble string `json:"skill_preamble"`
+	SystemPrompt  string `json:"system_prompt"`
+}
+
+// errorEvent is the final stdout line of a failed run. Provider failures also
+// carry the provider code, whether retrying may succeed, and any retry hint.
 type errorEvent struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
+	Type              string `json:"type"`
+	Message           string `json:"message"`
+	Code              string `json:"code,omitempty"`
+	Retryable         *bool  `json:"retryable,omitempty"`
+	RetryAfterSeconds int64  `json:"retry_after_seconds,omitzero"`
+	HTTPStatus        int    `json:"http_status,omitzero"`
 }
 
 type sessionObserver struct {
@@ -98,6 +125,8 @@ type sessionObserver struct {
 
 	mu  sync.Mutex
 	err error
+	// lastResponse is the most recent model response persisted by this run.
+	lastResponse *sessionstore.ModelResponse
 }
 
 func RunMain(
@@ -120,7 +149,14 @@ func RunMain(
 	if context.Cause(ctx) != nil {
 		return 130
 	}
-	encoded, encodeErr := json.Marshal(errorEvent{Type: "error", Message: err.Error()})
+	event := errorEvent{Type: "error", Message: err.Error()}
+	if apiErr, ok := errors.AsType[*responsesapi.APIError](err); ok {
+		event.Code = cmp.Or(apiErr.Code, apiErr.Type)
+		event.Retryable = &apiErr.Retryable
+		event.RetryAfterSeconds = int64((apiErr.RetryAfter + time.Second - 1) / time.Second)
+		event.HTTPStatus = apiErr.StatusCode
+	}
+	encoded, encodeErr := json.Marshal(event)
 	if encodeErr != nil {
 		err = errors.Join(err, fmt.Errorf("encode error event: %w", encodeErr))
 	} else if _, writeErr := fmt.Fprintf(output, "%s\n", encoded); writeErr != nil {
@@ -167,6 +203,7 @@ func Run(
 	workspaceDirectory := flags.String("workspace", ".", "agent workspace and Bash working directory")
 	logDirectory := flags.String("log-directory", "", "optional session JSONL log directory; unset writes only to stdout")
 	toolHeartbeatInterval := flags.Duration("tool-heartbeat-interval", 10*time.Minute, "tool-wait heartbeat interval (0 disables)")
+	printDefaultPrompts := flags.Bool("print-default-prompts", false, "print the default preamble, skill preamble, and system prompt as JSON and exit")
 	if err := flags.Parse(args); err != nil {
 		if usageErr != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -175,6 +212,20 @@ func Run(
 			return errors.Join(err, usageErr)
 		}
 		return err
+	}
+	if *printDefaultPrompts {
+		encoded, err := json.Marshal(defaultPrompts{
+			Preamble:      contextbuilder.DefaultPreamble(),
+			SkillPreamble: contextbuilder.DefaultSkillPreamble(),
+			SystemPrompt:  defaultSystemPrompt,
+		})
+		if err != nil {
+			return fmt.Errorf("encode default prompts: %w", err)
+		}
+		if _, err := fmt.Fprintf(output, "%s\n", encoded); err != nil {
+			return fmt.Errorf("write default prompts: %w", err)
+		}
+		return nil
 	}
 	if flags.NArg() > 1 {
 		return errors.New("expected at most one positional JSON request")
@@ -240,6 +291,9 @@ func Run(
 	if err != nil {
 		return err
 	}
+	if len(parsed.providerRouting()) != 0 && !selected.ProviderRouting {
+		return fmt.Errorf("provider_routing is not supported by provider %q", selected.Name)
+	}
 	configuredBaseURL := strings.TrimSpace(getenv(llmBaseURLEnvironment))
 	if configuredBaseURL == "" {
 		configuredBaseURL = selected.BaseURL
@@ -269,7 +323,7 @@ func Run(
 			)
 		}
 	}
-	client, err := selected.NewClient(apiKey, configuredBaseURL, maxAttempts, getenv)
+	client, err := selected.NewClient(apiKey, configuredBaseURL, maxAttempts, getenv, parsed.providerRouting())
 	if err != nil {
 		return fmt.Errorf("create %s client: %w", selected.Name, err)
 	}
@@ -348,6 +402,25 @@ func Run(
 			return err
 		}
 	}
+	if config.TaskExecutable != "" && getenv("UNREAL_AGENT_TASK_DEPTH") == "" &&
+		!slices.Contains(parsed.DisallowedTools, taskToolName) &&
+		!slices.Contains(parsed.DisallowedTools, taskBatchToolName) {
+		handler := newTaskHandler(runContext, taskRunnerConfig{
+			Executable: config.TaskExecutable, Workspace: workspace, SessionDirectory: storeDirectory,
+			Provider: selected.Name, BaseURL: configuredBaseURL, Model: model,
+			MaxAttempts: maxAttempts, Request: parsed,
+		})
+		registry = &taskRegistry{Registry: registry, translator: taskTranslator{}}
+		configuredTools.RemoteJobs = append(configuredTools.RemoteJobs, handler)
+		previousClose := configuredTools.Close
+		configuredTools.Close = func() error {
+			handler.Close()
+			if previousClose != nil {
+				return previousClose()
+			}
+			return nil
+		}
+	}
 	if _, enabled := registry.Resolve(tool.SkillUseName); enabled {
 		for _, skill := range skills {
 			if _, err := registry.RegisterSkill(skill); err != nil {
@@ -408,7 +481,11 @@ func Run(
 		return fmt.Errorf("submit stop request: %w", err)
 	}
 
-	builder := contextbuilder.NewBuilder(registry.Skills()...)
+	preamble := contextbuilder.DefaultPreamble()
+	if strings.TrimSpace(parsed.Preamble) != "" {
+		preamble = parsed.Preamble
+	}
+	builder := contextbuilder.NewBuilderWithPreamble(preamble, registry.Skills()...)
 	builder.SetModel(llm.Model{
 		ID:              model,
 		ReasoningEffort: reasoningEffort(parsed.ThinkingLevel),
@@ -416,6 +493,9 @@ func Run(
 	systemPrompt := defaultSystemPrompt
 	if parsed.SystemPrompt != nil {
 		systemPrompt = *parsed.SystemPrompt
+	}
+	if suffix := strings.TrimSpace(parsed.SystemPromptAppend); suffix != "" {
+		systemPrompt = strings.TrimSpace(strings.TrimSpace(systemPrompt) + "\n\n" + suffix)
 	}
 	builder.SetSystemPrompt(systemPrompt)
 	for _, definition := range registry.StaticDefinitions() {
@@ -447,7 +527,7 @@ func Run(
 	if coordinatorErr != nil {
 		return fmt.Errorf("run coordinator: %w", coordinatorErr)
 	}
-	return nil
+	return observer.FailureErr()
 }
 
 func resolveMaxAttempts(requested *int, getenv func(string) string) (int, error) {
@@ -616,6 +696,9 @@ func validateRequest(parsed Request) ([]RequestMessage, error) {
 			return nil, errors.New("thinking_level must be one of: low, medium, high, xhigh, max")
 		}
 	}
+	if routing := parsed.providerRouting(); len(routing) != 0 && routing.Kind() != '{' {
+		return nil, errors.New("provider_routing must be a JSON object")
+	}
 	for _, name := range append(parsed.ExtraAllowedTools, parsed.DisallowedTools...) {
 		if strings.TrimSpace(name) == "" {
 			return nil, errors.New("tool names must not be empty")
@@ -626,6 +709,9 @@ func validateRequest(parsed Request) ([]RequestMessage, error) {
 		if parsed.Prompt == nil {
 			return nil, errors.New("messages must be set")
 		}
+		if strings.TrimSpace(*parsed.Prompt) == "" {
+			return nil, errors.New("prompt must not be empty")
+		}
 		return []RequestMessage{{Content: *parsed.Prompt}}, nil
 	}
 	if len(parsed.Messages) == 0 {
@@ -634,6 +720,9 @@ func validateRequest(parsed Request) ([]RequestMessage, error) {
 	for index, message := range parsed.Messages {
 		if message.Role != "" && message.Role != "user" {
 			return nil, fmt.Errorf("messages[%d].role must be user", index)
+		}
+		if strings.TrimSpace(message.Content) == "" {
+			return nil, fmt.Errorf("messages[%d].content must not be empty", index)
 		}
 		if message.MessageID != nil && strings.TrimSpace(*message.MessageID) == "" {
 			return nil, fmt.Errorf("messages[%d].message_id must not be empty", index)
@@ -698,6 +787,9 @@ func (observer *sessionObserver) Observe(sessionID session.ID, item sessionstore
 		observer.fail(err)
 		return
 	}
+	if response, ok := item.Data.(sessionstore.ModelResponse); ok {
+		observer.lastResponse = &response
+	}
 }
 
 func writeSessionItem(output io.Writer, item sessionstore.Item) error {
@@ -720,4 +812,15 @@ func (observer *sessionObserver) Err() error {
 	observer.mu.Lock()
 	defer observer.mu.Unlock()
 	return observer.err
+}
+
+// FailureErr reports a failed final model response as the provider error that ended the run.
+func (observer *sessionObserver) FailureErr() error {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if observer.lastResponse == nil || observer.lastResponse.Response.Failure == nil {
+		return nil
+	}
+	return fmt.Errorf("model response for turn %q failed: %w",
+		observer.lastResponse.TurnID, responsesapi.FailureError(*observer.lastResponse.Response.Failure))
 }

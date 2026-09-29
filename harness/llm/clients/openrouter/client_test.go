@@ -1,6 +1,7 @@
 package openrouter
 
 import (
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -86,5 +87,38 @@ func TestClientCallsResponsesAPI(t *testing.T) {
 	<-requestSeen
 	if response.ID != "resp-1" || response.Stop != llm.StopComplete {
 		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestClientSendsProviderRouting(t *testing.T) {
+	const routing = `{"order":["deepinfra/fp8","novita"],"quantizations":["fp8"],"allow_fallbacks":true,"sort":"price"}`
+	bodies := make(chan map[string]jsontext.Value, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]jsontext.Value
+		if err := json.UnmarshalRead(request.Body, &body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		bodies <- body
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":" + `{"id":"resp-1","status":"completed","output":[],"usage":{}}` + "}\n\n"))
+	}))
+	defer server.Close()
+	client, err := NewClient(Config{APIKey: "test-key", BaseURL: server.URL, ProviderRouting: jsontext.Value(routing)})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	request := llm.Request{Model: llm.Model{ID: "openai/gpt-test"}, Input: []llm.Item{{
+		Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "hello"},
+	}}}
+	if _, err := client.Respond(t.Context(), request, llm.RequestOptions{}); err != nil {
+		t.Fatalf("respond: %v", err)
+	}
+	body := <-bodies
+	if got := string(body["provider"]); got != routing {
+		t.Fatalf("provider = %s, want %s", got, routing)
+	}
+	if _, ok := body["cache_control"]; !ok {
+		t.Fatal("provider routing replaced cache_control")
 	}
 }

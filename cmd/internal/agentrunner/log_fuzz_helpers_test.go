@@ -23,7 +23,7 @@ func addLogFuzzSeeds(f *testing.F) {
 		text    string
 		tokens  uint64
 	}{
-		{nil, "", 0},
+		{nil, "x", 0},
 		{[]byte{0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 3, 13, 14, 15}, "quotes\"\\\n\r\t\x00 会話\u2028", 1},
 		{[]byte{3, 4, 8, 5, 8, 6, 8, 3, 9}, "precision", 1<<53 + 1},
 		{[]byte{10, 3, 9, 8, 11, 8, 3}, "\xffinvalid UTF-8", math.MaxInt64},

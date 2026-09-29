@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 	"github.com/unreallabsai/unreal-agent/harness/primitives"
@@ -170,5 +171,82 @@ func TestDoesNotRetryTerminalInBandErrors(t *testing.T) {
 		if retryableResponseError(c.err, nil) {
 			t.Fatalf("%s: expected non-retryable, got retryable", c.name)
 		}
+	}
+}
+
+func TestAdapterReportsFinalRetryHint(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		status        int
+		retryAfter    string
+		body          string
+		wantCode      string
+		wantRetryable bool
+		wantHint      time.Duration
+	}{
+		{
+			name: "rate limit header", status: http.StatusTooManyRequests, retryAfter: "30",
+			body:     `{"error":{"code":"rate_limit_exceeded","message":"Slow down."}}`,
+			wantCode: "rate_limit_exceeded", wantRetryable: true, wantHint: 30 * time.Second,
+		},
+		{
+			name: "rate limit message", status: http.StatusTooManyRequests,
+			body:     `{"error":{"code":"rate_limit_exceeded","message":"Please try again in 1.5s."}}`,
+			wantCode: "rate_limit_exceeded", wantRetryable: true, wantHint: 1500 * time.Millisecond,
+		},
+		{
+			name: "quota", status: http.StatusTooManyRequests,
+			body:     `{"error":{"code":"insufficient_quota","message":"You exceeded your current quota."}}`,
+			wantCode: "insufficient_quota",
+		},
+		{
+			name: "Codex usage limit reset", status: http.StatusTooManyRequests,
+			body: `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus",` +
+				`"resets_at":` + strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10) + `,"resets_in_seconds":3600}}`,
+			wantHint: time.Hour,
+		},
+		{
+			name: "Codex usage limit Retry-After wins", status: http.StatusTooManyRequests, retryAfter: "60",
+			body:     `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":3600}}`,
+			wantHint: time.Minute,
+		},
+		{
+			name: "in-band stream error", status: http.StatusOK,
+			body:     "data: {\"type\":\"error\",\"code\":\"rate_limit_exceeded\",\"message\":\"Please try again in 2s.\"}\n\n",
+			wantCode: "rate_limit_exceeded", wantRetryable: true, wantHint: 2 * time.Second,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				if test.retryAfter != "" {
+					writer.Header().Set("Retry-After", test.retryAfter)
+				}
+				if test.status == http.StatusOK {
+					writer.Header().Set("Content-Type", "text/event-stream")
+				}
+				writer.WriteHeader(test.status)
+				if _, err := io.WriteString(writer, test.body); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			client := newTestAdapterWithConfig(t, Config{Endpoint: server.URL, MaxAttempts: new(1)})
+			_, err := client.Respond(t.Context(), validRequest(), llm.RequestOptions{})
+			apiError, ok := errors.AsType[*APIError](err)
+			if !ok || apiError.Code != test.wantCode || apiError.Retryable != test.wantRetryable || apiError.RetryAfter != test.wantHint {
+				t.Fatalf("error = %#v (%v), want code %q, retryable %v, retry after %v", apiError, err, test.wantCode, test.wantRetryable, test.wantHint)
+			}
+		})
+	}
+}
+
+func TestRetryAfterHintUsesCodexResetTime(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	err := providerError(http.StatusTooManyRequests, []byte(`{"error":{"type":"usage_limit_reached","message":"limit","resets_at":1700000090}}`))
+	if got := retryAfterHint(err, nil, now); got != 90*time.Second {
+		t.Fatalf("hint = %v, want 90s", got)
+	}
+	if got := retryAfterHint(err, nil, now.Add(time.Hour)); got != 0 {
+		t.Fatalf("hint after reset = %v, want 0", got)
 	}
 }

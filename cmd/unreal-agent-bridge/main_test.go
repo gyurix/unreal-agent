@@ -56,7 +56,7 @@ func TestLoadConfigZenOptionalKey(t *testing.T) {
 	}
 	client, err := config.provider.NewClient(config.apiKey, config.baseURL, config.maxAttempts, getenvFunc(map[string]string{
 		"OPENCODE_ZEN_API_KEY": "oc_sk_test",
-	}))
+	}), nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

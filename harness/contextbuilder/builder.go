@@ -30,8 +30,22 @@ type builder struct {
 
 var _ Builder = (*builder)(nil)
 
+// DefaultPreamble returns the embedded preamble that leads every system prompt.
+func DefaultPreamble() string {
+	return preamble
+}
+
+// DefaultSkillPreamble returns the embedded text that introduces available skills.
+func DefaultSkillPreamble() string {
+	return skillPreamble
+}
+
 func NewBuilder(skills ...tool.Skill) Builder {
-	currentPreamble := preamble
+	return NewBuilderWithPreamble(preamble, skills...)
+}
+
+// NewBuilderWithPreamble is NewBuilder with currentPreamble replacing the default preamble.
+func NewBuilderWithPreamble(currentPreamble string, skills ...tool.Skill) Builder {
 	if skillPrompt := formatSkillsForPrompt(skills); skillPrompt != "" {
 		currentPreamble += "\n\n" + skillPrompt
 	}
