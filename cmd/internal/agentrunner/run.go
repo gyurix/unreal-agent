@@ -42,12 +42,7 @@ const (
 	llmMaxAttemptsEnvironment = "UNREAL_HARNESS_LLM_MAX_ATTEMPTS"
 )
 
-const defaultSystemPrompt = `You are an AI agent running inside an isolated sandbox container.
-
-## Guidelines
-- Save output files to the workspace root.
-- For large datasets, inspect a sample first before processing everything.
-`
+const defaultSystemPrompt = ""
 
 type Client interface {
 	llm.Adapter
