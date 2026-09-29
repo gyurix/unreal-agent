@@ -270,6 +270,21 @@ func TestBuilderLeadsSystemPromptWithPreamble(t *testing.T) {
 	}
 }
 
+func TestBuilderWithPreambleReplacesDefaultPreamble(t *testing.T) {
+	current := NewBuilderWithPreamble("Custom preamble.", tool.Skill{Name: "review", Description: "Review code.", Path: "/skills/review/SKILL.md"})
+	current.SetSystemPrompt("Be concise.")
+
+	result, err := current.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Request.Input[0].Data.(llm.Message).Text
+	if !strings.HasPrefix(text, "Custom preamble.\n\n"+skillPreamble+"\n\n<available_skills>") ||
+		!strings.HasSuffix(text, "</available_skills>\n\nBe concise.") || strings.Contains(text, preamble) {
+		t.Fatalf("system prompt = %q", text)
+	}
+}
+
 func TestBuilderAppendsSkillsToPreamble(t *testing.T) {
 	skills := []tool.Skill{
 		{

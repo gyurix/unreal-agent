@@ -18,7 +18,11 @@ Request schema (JSON object; unknown fields are rejected):
   max_attempts: positive integer (optional)
     Overrides UNREAL_HARNESS_LLM_MAX_ATTEMPTS (default 5); 1 disables retries.
   system_prompt: string (optional)
-    Replaces the default system prompt.
+    Replaces the default system prompt. The preamble and skill list still lead it.
+  system_prompt_append: string (optional)
+    Appended to the effective system prompt after a blank line.
+  preamble: string (optional)
+    Replaces the default preamble when non-empty. -print-default-prompts shows the defaults.
   thinking_level: "low" | "medium" | "high" | "xhigh" | "max" (optional; default "high")
   session_id: non-empty string (optional)
     Creates or resumes a persisted session.

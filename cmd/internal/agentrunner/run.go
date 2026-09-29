@@ -66,6 +66,8 @@ type Request struct {
 	Messages               []RequestMessage `json:"messages"`
 	Prompt                 *string          `json:"prompt"`
 	SystemPrompt           *string          `json:"system_prompt"`
+	SystemPromptAppend     string           `json:"system_prompt_append"`
+	Preamble               string           `json:"preamble"`
 	Model                  string           `json:"model"`
 	MaxAttempts            *int             `json:"max_attempts"`
 	SessionID              *string          `json:"session_id"`
@@ -89,6 +91,12 @@ type environmentChange struct {
 
 type environmentScope struct {
 	changes []environmentChange
+}
+
+type defaultPrompts struct {
+	Preamble      string `json:"preamble"`
+	SkillPreamble string `json:"skill_preamble"`
+	SystemPrompt  string `json:"system_prompt"`
 }
 
 type errorEvent struct {
@@ -172,6 +180,7 @@ func Run(
 	workspaceDirectory := flags.String("workspace", ".", "agent workspace and Bash working directory")
 	logDirectory := flags.String("log-directory", "", "optional session JSONL log directory; unset writes only to stdout")
 	toolHeartbeatInterval := flags.Duration("tool-heartbeat-interval", 10*time.Minute, "tool-wait heartbeat interval (0 disables)")
+	printDefaultPrompts := flags.Bool("print-default-prompts", false, "print the default preamble, skill preamble, and system prompt as JSON and exit")
 	if err := flags.Parse(args); err != nil {
 		if usageErr != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -180,6 +189,20 @@ func Run(
 			return errors.Join(err, usageErr)
 		}
 		return err
+	}
+	if *printDefaultPrompts {
+		encoded, err := json.Marshal(defaultPrompts{
+			Preamble:      contextbuilder.DefaultPreamble(),
+			SkillPreamble: contextbuilder.DefaultSkillPreamble(),
+			SystemPrompt:  defaultSystemPrompt,
+		})
+		if err != nil {
+			return fmt.Errorf("encode default prompts: %w", err)
+		}
+		if _, err := fmt.Fprintf(output, "%s\n", encoded); err != nil {
+			return fmt.Errorf("write default prompts: %w", err)
+		}
+		return nil
 	}
 	if flags.NArg() > 1 {
 		return errors.New("expected at most one positional JSON request")
@@ -407,7 +430,11 @@ func Run(
 		return fmt.Errorf("submit stop request: %w", err)
 	}
 
-	builder := contextbuilder.NewBuilder(registry.Skills()...)
+	preamble := contextbuilder.DefaultPreamble()
+	if strings.TrimSpace(parsed.Preamble) != "" {
+		preamble = parsed.Preamble
+	}
+	builder := contextbuilder.NewBuilderWithPreamble(preamble, registry.Skills()...)
 	builder.SetModel(llm.Model{
 		ID:              model,
 		ReasoningEffort: reasoningEffort(parsed.ThinkingLevel),
@@ -415,6 +442,9 @@ func Run(
 	systemPrompt := defaultSystemPrompt
 	if parsed.SystemPrompt != nil {
 		systemPrompt = *parsed.SystemPrompt
+	}
+	if suffix := strings.TrimSpace(parsed.SystemPromptAppend); suffix != "" {
+		systemPrompt = strings.TrimSpace(strings.TrimSpace(systemPrompt) + "\n\n" + suffix)
 	}
 	builder.SetSystemPrompt(systemPrompt)
 	for _, definition := range registry.StaticDefinitions() {
