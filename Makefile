@@ -2,6 +2,7 @@
 
 build:
 	go build -trimpath -o bin/unreal-agent-runner ./cmd/unreal-agent-runner
+	go build -trimpath -o bin/unreal-agent-bridge ./cmd/unreal-agent-bridge
 
 test:
 	go test -race ./...

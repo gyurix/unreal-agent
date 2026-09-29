@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -26,6 +27,14 @@ type APIError struct {
 	Message    string
 	Param      string
 	Type       string
+	// Retryable and RetryAfter describe the final attempt once retries stop.
+	// RetryAfter is the provider's Retry-After or "try again in" hint, or zero.
+	Retryable  bool
+	RetryAfter time.Duration
+
+	// Codex usage limits report when the limit resets instead of Retry-After.
+	resetsIn time.Duration
+	resetsAt time.Time
 }
 
 func (err *APIError) Error() string {
@@ -113,7 +122,7 @@ func (adapter *adapter) Respond(ctx context.Context, request llm.Request, option
 	if err != nil {
 		return llm.Response{}, err
 	}
-	statusCode, responseBody, err := adapter.exchange(ctx, body, key)
+	statusCode, responseBody, apiError, err := adapter.exchange(ctx, body, key)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -121,7 +130,10 @@ func (adapter *adapter) Respond(ctx context.Context, request llm.Request, option
 		adapter.trace(Exchange{RequestBody: body, StatusCode: statusCode, ResponseBody: responseBody})
 	}
 	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
-		return llm.Response{}, fmt.Errorf("create response: %w", providerError(statusCode, responseBody))
+		if apiError == nil {
+			apiError = providerError(statusCode, responseBody)
+		}
+		return llm.Response{}, fmt.Errorf("create response: %w", apiError)
 	}
 	return decodeResponse(responseBody)
 }
@@ -155,6 +167,14 @@ func (adapter *adapter) remoteRequest(body []byte, cacheKey string) primitives.R
 	return request
 }
 
+// FailureError describes a failed response as the provider error that ended it.
+func FailureError(failure llm.Failure) *APIError {
+	err := &APIError{StatusCode: http.StatusOK, Code: failure.Code, Message: failure.Message}
+	err.Retryable = retryableResponseError(err, nil)
+	err.RetryAfter = retryAfterHint(err, nil, time.Now())
+	return err
+}
+
 func providerError(statusCode int, body []byte) *APIError {
 	var envelope struct {
 		Error struct {
@@ -162,16 +182,26 @@ func providerError(statusCode int, body []byte) *APIError {
 			Message string  `json:"message"`
 			Param   *string `json:"param"`
 			Type    string  `json:"type"`
+
+			ResetsInSeconds float64 `json:"resets_in_seconds"`
+			ResetsAt        float64 `json:"resets_at"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &envelope); err == nil && (envelope.Error.Message != "" || dereference(envelope.Error.Code) != "") {
-		return &APIError{
+		apiError := &APIError{
 			StatusCode: statusCode,
 			Code:       dereference(envelope.Error.Code),
 			Message:    envelope.Error.Message,
 			Param:      dereference(envelope.Error.Param),
 			Type:       envelope.Error.Type,
 		}
+		if seconds := envelope.Error.ResetsInSeconds; seconds > 0 && seconds < float64(math.MaxInt64/time.Second) {
+			apiError.resetsIn = time.Duration(seconds * float64(time.Second))
+		}
+		if seconds := envelope.Error.ResetsAt; seconds > 0 && seconds < float64(math.MaxInt64/time.Second) {
+			apiError.resetsAt = time.Unix(int64(seconds), 0)
+		}
+		return apiError
 	}
 
 	message := strings.TrimSpace(string(body))

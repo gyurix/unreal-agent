@@ -69,6 +69,9 @@ func TestRunnerProviderDefaultModels(t *testing.T) {
 		if provider.Name == "openai" {
 			want = "gpt-6-astra"
 		}
+		if provider.Name == "opencode-zen" {
+			want = "space-bunny-free"
+		}
 		if provider.DefaultModel != want {
 			t.Errorf("%s default model = %q, want %q", provider.Name, provider.DefaultModel, want)
 		}

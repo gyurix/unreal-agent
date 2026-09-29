@@ -1,6 +1,9 @@
 package agentrunner
 
 import (
+	"strings"
+
+	"github.com/unreallabsai/unreal-agent/harness/llm/clients/chatcompat"
 	"github.com/unreallabsai/unreal-agent/harness/llm/clients/fireworks"
 	"github.com/unreallabsai/unreal-agent/harness/llm/clients/ollama"
 	"github.com/unreallabsai/unreal-agent/harness/llm/clients/openai"
@@ -10,6 +13,24 @@ import (
 
 func DefaultProviders() []Provider {
 	return []Provider{
+		{
+			Name:         "opencode-zen",
+			BaseURL:      chatcompat.DefaultBaseURL,
+			DefaultModel: "space-bunny-free",
+			NewClient: func(_, baseURL string, maxAttempts int, getenv func(string) string) (Client, error) {
+				return chatcompat.NewClient(chatcompat.Config{
+					APIKey:      preferred(strings.TrimSpace(getenv(llmAPIKeyEnvironment)), strings.TrimSpace(getenv("OPENCODE_ZEN_API_KEY"))),
+					BaseURL:     baseURL,
+					MaxAttempts: &maxAttempts,
+					ClientType:  strings.TrimSpace(getenv("OPENCODE_CLIENT_TYPE")),
+					SessionID:   strings.TrimSpace(getenv("OPENCODE_SESSION_ID")),
+					RequestID:   strings.TrimSpace(getenv("OPENCODE_REQUEST_ID")),
+					ProjectID:   preferred(strings.TrimSpace(getenv("OPENCODE_PROJECT_ID")), "global"),
+					UserAgent:   strings.TrimSpace(getenv("OPENCODE_USER_AGENT")),
+					Stream:      true,
+				})
+			},
+		},
 		{
 			Name:    "ollama",
 			BaseURL: ollama.BaseURL,
@@ -56,4 +77,13 @@ func DefaultProviders() []Provider {
 			},
 		},
 	}
+}
+
+func preferred(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
