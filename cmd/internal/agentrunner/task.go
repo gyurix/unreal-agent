@@ -23,6 +23,8 @@ import (
 
 const (
 	taskToolName                                     = "task"
+	taskBatchToolName                                = "task_batch"
+	taskSystemAppend                                 = "You are an independent subagent. Minimize model turns: batch independent tool calls; combine dependent shell steps with && in one bash call when safe. Avoid redundant checks and polling. Verify requested outcomes, then report a concise factual result or exact failure."
 	taskPlanType      operation.RemoteJobPlanType    = "local_subagent"
 	taskPlanVersion   operation.RemoteJobPlanVersion = 1
 	taskMaxPending                                   = 64
@@ -36,17 +38,28 @@ type taskArguments struct {
 
 type taskRegistry struct {
 	tool.Registry
-	translator taskTranslator
+	translator      taskTranslator
+	batchTranslator taskBatchTranslator
+}
+
+func taskParameters() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"name":   map[string]any{"type": "string", "description": "Short subagent name, e.g. ag01."},
+		"prompt": map[string]any{"type": "string", "description": "Self-contained work request for the subagent."},
+	}, "required": []any{"name", "prompt"}, "additionalProperties": false}
 }
 
 func (r *taskRegistry) StaticDefinitions() []tool.Definition {
 	return append(r.Registry.StaticDefinitions(), tool.Definition{Tool: llm.Tool{
 		Type: llm.ToolFunction, Name: taskToolName,
 		Description: "Run an independent subagent in the same workspace. Use a distinct name and a complete task prompt; subagents run concurrently when called together. The result includes its final answer and token usage.",
+		Parameters:  taskParameters(),
+	}}, tool.Definition{Tool: llm.Tool{
+		Type: llm.ToolFunction, Name: taskBatchToolName,
+		Description: "Run 2-64 independent subagents concurrently and receive one combined result after all finish. Prefer this over many task calls when all results are needed before the next step.",
 		Parameters: map[string]any{"type": "object", "properties": map[string]any{
-			"name":   map[string]any{"type": "string", "description": "Short subagent name, e.g. ag01."},
-			"prompt": map[string]any{"type": "string", "description": "Self-contained work request for the subagent."},
-		}, "required": []any{"name", "prompt"}, "additionalProperties": false},
+			"tasks": map[string]any{"type": "array", "items": taskParameters(), "minItems": 2, "maxItems": taskMaxPending},
+		}, "required": []any{"tasks"}, "additionalProperties": false},
 	}})
 }
 
@@ -54,10 +67,32 @@ func (r *taskRegistry) Resolve(name string) (tool.Translator, bool) {
 	if name == taskToolName {
 		return r.translator, true
 	}
+	if name == taskBatchToolName {
+		return r.batchTranslator, true
+	}
 	return r.Registry.Resolve(name)
 }
 
 type taskTranslator struct{}
+
+func validateTask(args *taskArguments) error {
+	args.Name = strings.TrimSpace(args.Name)
+	if len(args.Name) == 0 || len(args.Name) > 64 || strings.ContainsAny(args.Name, "\r\n\x00") {
+		return errors.New("task name must be 1-64 characters without control line breaks or NUL")
+	}
+	if strings.TrimSpace(args.Prompt) == "" || len(args.Prompt) > 65536 {
+		return errors.New("task prompt must be nonempty and at most 65536 bytes")
+	}
+	return nil
+}
+
+func taskSpec(args taskArguments) (operation.Spec, error) {
+	data, err := json.Marshal(args)
+	if err != nil {
+		return operation.Spec{}, fmt.Errorf("encode task arguments: %w", err)
+	}
+	return operation.NewRemoteJobSpec(operation.RemoteJobPlan{Type: taskPlanType, Version: taskPlanVersion, Data: data})
+}
 
 func (taskTranslator) Translate(ctx tool.Context, call llm.ToolCall) tool.CallStatus {
 	if call.Name != "" && call.Name != taskToolName {
@@ -67,22 +102,92 @@ func (taskTranslator) Translate(ctx tool.Context, call llm.ToolCall) tool.CallSt
 	if err := json.Unmarshal([]byte(call.Arguments), &args, json.RejectUnknownMembers(true)); err != nil {
 		return tool.CallStatus{Error: fmt.Sprintf("decode task arguments: %v", err)}
 	}
-	args.Name = strings.TrimSpace(args.Name)
-	if len(args.Name) == 0 || len(args.Name) > 64 || strings.ContainsAny(args.Name, "\r\n\x00") {
-		return tool.CallStatus{Error: "task name must be 1-64 characters without control line breaks or NUL"}
+	if err := validateTask(&args); err != nil {
+		return tool.CallStatus{Error: err.Error()}
 	}
-	if strings.TrimSpace(args.Prompt) == "" || len(args.Prompt) > 65536 {
-		return tool.CallStatus{Error: "task prompt must be nonempty and at most 65536 bytes"}
-	}
-	data, err := json.Marshal(args)
-	if err != nil {
-		return tool.CallStatus{Error: fmt.Sprintf("encode task arguments: %v", err)}
-	}
-	spec, err := operation.NewRemoteJobSpec(operation.RemoteJobPlan{Type: taskPlanType, Version: taskPlanVersion, Data: data})
+	spec, err := taskSpec(args)
 	if err != nil {
 		return tool.CallStatus{Error: fmt.Sprintf("create task: %v", err)}
 	}
 	return tool.CallStatus{WaitingFor: []operation.ID{ctx.Submit(spec)}}
+}
+
+type taskBatchTranslator struct{}
+
+func (taskBatchTranslator) Translate(ctx tool.Context, call llm.ToolCall) tool.CallStatus {
+	if call.Name != "" && call.Name != taskBatchToolName {
+		return tool.CallStatus{Error: "task_batch tool name mismatch"}
+	}
+	var args struct {
+		Tasks []taskArguments `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(call.Arguments), &args, json.RejectUnknownMembers(true)); err != nil {
+		return tool.CallStatus{Error: fmt.Sprintf("decode task_batch arguments: %v", err)}
+	}
+	if len(args.Tasks) < 2 || len(args.Tasks) > taskMaxPending {
+		return tool.CallStatus{Error: fmt.Sprintf("task_batch requires 2-%d tasks", taskMaxPending)}
+	}
+	seen := make(map[string]struct{}, len(args.Tasks))
+	specs := make([]operation.Spec, 0, len(args.Tasks))
+	for index := range args.Tasks {
+		current := &args.Tasks[index]
+		if err := validateTask(current); err != nil {
+			return tool.CallStatus{Error: fmt.Sprintf("task %d: %v", index+1, err)}
+		}
+		if _, exists := seen[current.Name]; exists {
+			return tool.CallStatus{Error: fmt.Sprintf("duplicate task name %q", current.Name)}
+		}
+		seen[current.Name] = struct{}{}
+		spec, err := taskSpec(*current)
+		if err != nil {
+			return tool.CallStatus{Error: fmt.Sprintf("task %d: %v", index+1, err)}
+		}
+		specs = append(specs, spec)
+	}
+	ids := make([]operation.ID, 0, len(specs))
+	for _, spec := range specs {
+		ids = append(ids, ctx.Submit(spec))
+	}
+	return tool.CallStatus{WaitingFor: ids}
+}
+
+func (taskBatchTranslator) TranslateResult(callID string, status tool.CallStatus, operations []operation.Operation) (llm.ToolResult, error) {
+	result := llm.ToolResult{CallID: callID}
+	if status.Error != "" {
+		result.Output = []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: status.Error}}
+		return result, nil
+	}
+	if len(operations) == 0 {
+		return result, fmt.Errorf("task_batch call %q has no operations", callID)
+	}
+	var output strings.Builder
+	perTaskLimit := max(500, 24_000/len(operations))
+	for _, current := range operations {
+		state, err := operation.DecodeRemoteJobState(current)
+		if err != nil {
+			return result, err
+		}
+		var args taskArguments
+		if err := json.Unmarshal(state.Plan.Data, &args); err != nil {
+			return result, fmt.Errorf("decode task_batch plan: %w", err)
+		}
+		if output.Len() > 0 {
+			output.WriteString("\n\n")
+		}
+		switch current.Status {
+		case operation.StatusCompleted:
+			bounded, _ := operation.BoundOutput(state.TerminalResult, perTaskLimit)
+			output.WriteString(bounded)
+		case operation.StatusFailed, operation.StatusCanceled:
+			fmt.Fprintf(&output, "Subagent %s failed: %s", args.Name, state.TerminalError)
+		case operation.StatusReady, operation.StatusAwaiting, operation.StatusCanceling:
+			fmt.Fprintf(&output, "Subagent %s still running.", args.Name)
+		default:
+			return result, fmt.Errorf("task_batch call %q has invalid status %q", callID, current.Status)
+		}
+	}
+	result.Output = []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: output.String()}}
+	return result, nil
 }
 
 func (taskTranslator) TranslateResult(callID string, status tool.CallStatus, operations []operation.Operation) (llm.ToolResult, error) {
@@ -278,9 +383,9 @@ func (h *taskHandler) cancel(ctx context.Context, current operation.Operation) {
 func (h *taskHandler) execute(ctx context.Context, childID string, id operation.ID, args taskArguments) (string, error) {
 	messageID := string(id)
 	request := Request{Messages: []RequestMessage{{Role: "user", Content: args.Prompt, MessageID: &messageID}},
-		Model: h.config.Model, SessionID: &childID, DisallowedTools: []string{taskToolName},
+		Model: h.config.Model, SessionID: &childID, DisallowedTools: []string{taskToolName, taskBatchToolName},
 		MaxAttempts: &h.config.MaxAttempts, ThinkingLevel: h.config.Request.ThinkingLevel,
-		SystemPrompt: h.config.Request.SystemPrompt, SystemPromptAppend: h.config.Request.SystemPromptAppend,
+		SystemPrompt: h.config.Request.SystemPrompt, SystemPromptAppend: strings.TrimSpace(h.config.Request.SystemPromptAppend + "\n\n" + taskSystemAppend),
 		Preamble: h.config.Request.Preamble}
 	encoded, err := json.Marshal(request)
 	if err != nil {

@@ -108,9 +108,42 @@ Direct execution checks after this change:
 | Exact 661-byte prompt, live Zen | Fifteen child session files created; timed out at 210 seconds. The requested `/tmp/test-agentic-work` path was absent afterward. No whole-task success, speed, token, or absence-of-403 claim can be made for this run. |
 
 The previous table remains **pre-Task** baseline evidence and must not be
-read as a speed/token comparison for the new implementation. A controlled
-end-to-end rerun, including all child token usage and failure counts, is still
-needed before drawing performance conclusions.
+read as a speed/token comparison for the new implementation. The follow-up
+below includes root and child usage but remains single-run evidence.
+
+## Native Task performance follow-up — 2026-09-29
+
+The performance bottleneck was not process startup: a local ten-child SSE run
+finished in 0.36 seconds including 0.25 seconds of simulated child inference.
+The live trace instead showed 12 root model turns, often one per asynchronously
+completed child, and 45 child model turns. Some children made redundant reads
+and checks. The task-specific fix adds `task_batch`, which submits separate
+durable child operations but delivers one result only after the entire batch
+finishes. The child instruction now encourages safe command batching and concise
+reports; the root preamble discourages polling. Batch results are bounded per
+child with an explicit truncation marker, while complete child histories remain
+in their session files.
+
+Three **single-run**, keyless `mimo-v2.6-flash-free` executions used the same
+661-byte prompt, `max_attempts=1`, and 15 real subagents. The first is the
+previous native-Task implementation; the second adds `task_batch`; the third
+also adds the child instruction. All three exited 0, persisted 15 completed
+child operations, and removed `/tmp/test-agentic-work`; stderr and persisted
+model failure counts were zero. No 403 occurred in these completed runs.
+
+| Harness version | Wall time | Root turns | Root input / output tokens | Child turns | Child input / output tokens | Total input / output tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Individual `task` calls | 123.26 s | 12 | 64,579 / 3,013 | 45 | 48,439 / 9,192 | 113,018 / 12,205 |
+| `task_batch` | 127.79 s | 5 | 28,296 / 2,819 | 43 | 50,607 / 9,474 | 78,903 / 12,293 |
+| `task_batch` + concise child guidance | 100.93 s | 5 | 20,616 / 2,515 | 38 | 40,081 / 5,655 | 60,697 / 8,170 |
+
+The final run used **46.3% fewer reported input tokens** and **33.1% fewer
+reported output tokens** than the individual-Task run, and its wall time was
+18.1% lower. The batch-only run was slower despite fewer root turns: free-model
+latency varied. These are observations, **not** repeat-sample latency estimates
+or guaranteed savings. The original 49.86-second shell-only run remains
+non-comparable because it did not run real agents. The previous 210-second
+timeout remains a reliability warning.
 
 ## Next actions
 
@@ -118,8 +151,7 @@ needed before drawing performance conclusions.
    be parallel; the observed first-turn race cost a repair turn.
 2. Keep per-model endpoint routing and a current free-model availability
    probe. Do not retry Jev as chat or treat upstream 400 as a gate failure.
-3. Run repeated, isolated benchmarks with warm/cold cache separation and
-   include Task subagent usage before claiming a speed or token advantage.
-4. Investigate the 210-second exact-prompt timeout with a persisted root
-   trace and bounded per-task wall time; avoid model-generated sleeps before
-   claiming reliable full-task completion.
+3. Run repeated, isolated benchmarks with warm/cold cache separation; report
+   tail latency and all child usage, not root tokens alone.
+4. Investigate the earlier 210-second exact-prompt timeout and add a bounded,
+   configurable per-task wall time before claiming reliable completion.

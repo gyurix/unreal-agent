@@ -403,7 +403,8 @@ func Run(
 		}
 	}
 	if config.TaskExecutable != "" && getenv("UNREAL_AGENT_TASK_DEPTH") == "" &&
-		!slices.Contains(parsed.DisallowedTools, taskToolName) {
+		!slices.Contains(parsed.DisallowedTools, taskToolName) &&
+		!slices.Contains(parsed.DisallowedTools, taskBatchToolName) {
 		handler := newTaskHandler(runContext, taskRunnerConfig{
 			Executable: config.TaskExecutable, Workspace: workspace, SessionDirectory: storeDirectory,
 			Provider: selected.Name, BaseURL: configuredBaseURL, Model: model,
