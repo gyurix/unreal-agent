@@ -153,6 +153,12 @@ func (client *Client) Respond(ctx context.Context, request llm.Request, _ llm.Re
 	if strings.TrimSpace(request.Model.ID) == "" {
 		return llm.Response{}, errors.New("model must be set")
 	}
+	if strings.HasPrefix(request.Model.ID, "jev-") {
+		return llm.Response{}, errors.New("Jev is a System One evaluation model, not a Chat Completions agent model")
+	}
+	if strings.HasPrefix(request.Model.ID, "muse-spark-") {
+		return client.respondResponses(ctx, request)
+	}
 	messages, err := requestMessages(request.Input)
 	if err != nil {
 		return llm.Response{}, err
@@ -330,10 +336,28 @@ type chatResponse struct {
 			ToolCalls []chatToolCall `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-	} `json:"usage"`
+	Usage *chatUsage `json:"usage"`
+}
+
+type chatUsage struct {
+	PromptTokens        int64 `json:"prompt_tokens"`
+	CompletionTokens    int64 `json:"completion_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens     int64 `json:"cached_tokens"`
+		CacheWriteTokens int64 `json:"cache_write_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
+func (usage *chatUsage) normalize() llm.Usage {
+	return llm.Usage{
+		InputTokens: usage.PromptTokens, CachedInputTokens: usage.PromptTokensDetails.CachedTokens,
+		CacheWriteInputTokens: usage.PromptTokensDetails.CacheWriteTokens,
+		OutputTokens:          usage.CompletionTokens, ReasoningTokens: usage.CompletionTokensDetails.ReasoningTokens,
+		Raw: jsontext.Value(mustMarshal(usage)),
+	}
 }
 
 func (client *Client) exchange(ctx context.Context, endpoint string, body []byte, requestID string) (llm.Response, bool, time.Duration, error) {
@@ -435,7 +459,7 @@ func chatToResponse(encoded []byte) (llm.Response, error) {
 		})
 	}
 	if decoded.Usage != nil {
-		response.Usage = llm.Usage{InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens, Raw: jsontext.Value(mustMarshal(decoded.Usage))}
+		response.Usage = decoded.Usage.normalize()
 	}
 	return response, nil
 }
@@ -457,10 +481,7 @@ type streamChunk struct {
 			} `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-	} `json:"usage"`
+	Usage *chatUsage `json:"usage"`
 }
 
 func streamToResponse(encoded []byte) (llm.Response, error) {
@@ -490,7 +511,7 @@ func streamToResponse(encoded []byte) (llm.Response, error) {
 			result.ID = chunk.ID
 		}
 		if chunk.Usage != nil {
-			result.Usage = llm.Usage{InputTokens: chunk.Usage.PromptTokens, OutputTokens: chunk.Usage.CompletionTokens, Raw: jsontext.Value(mustMarshal(chunk.Usage))}
+			result.Usage = chunk.Usage.normalize()
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Index != 0 {

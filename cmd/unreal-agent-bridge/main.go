@@ -15,7 +15,6 @@ import (
 
 	"github.com/unreallabsai/unreal-agent/cmd/internal/agentrunner"
 	"github.com/unreallabsai/unreal-agent/harness/bridge"
-	"github.com/unreallabsai/unreal-agent/harness/llm/clients/chatcompat"
 	"github.com/unreallabsai/unreal-agent/harness/llm/responsesapi"
 )
 
@@ -151,35 +150,7 @@ func loadConfig(getenv func(string) string) (serverConfig, error) {
 }
 
 func bridgeProviders() []agentrunner.Provider {
-	providers := agentrunner.DefaultProviders()
-	return append(providers, agentrunner.Provider{
-		Name:         "opencode-zen",
-		BaseURL:      chatcompat.DefaultBaseURL,
-		DefaultModel: "space-bunny-free",
-		// No APIKeyEnvironment: zen free models are keyless. An optional
-		// key from UNREAL_HARNESS_LLM_API_KEY/OPENCODE_ZEN_API_KEY is
-		// forwarded when set, but never required or extracted.
-		NewClient: func(_, baseURL string, maxAttempts int, getenv func(string) string) (agentrunner.Client, error) {
-			apiKey := ""
-			if getenv != nil {
-				apiKey = strings.TrimSpace(getenv("UNREAL_HARNESS_LLM_API_KEY"))
-				if apiKey == "" {
-					apiKey = strings.TrimSpace(getenv("OPENCODE_ZEN_API_KEY"))
-				}
-			}
-			return chatcompat.NewClient(chatcompat.Config{
-				APIKey:      apiKey,
-				BaseURL:     baseURL,
-				MaxAttempts: &maxAttempts,
-				ClientType:  strings.TrimSpace(getenv("OPENCODE_CLIENT_TYPE")),
-				SessionID:   strings.TrimSpace(getenv("OPENCODE_SESSION_ID")),
-				RequestID:   strings.TrimSpace(getenv("OPENCODE_REQUEST_ID")),
-				ProjectID:   firstNonEmpty(getenv("OPENCODE_PROJECT_ID"), "global"),
-				UserAgent:   strings.TrimSpace(getenv("OPENCODE_USER_AGENT")),
-				Stream:      true,
-			})
-		},
-	})
+	return agentrunner.DefaultProviders()
 }
 
 func splitList(value string) []string {

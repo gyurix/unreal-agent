@@ -51,11 +51,12 @@ required. This is an observed sufficiency result, not a guarantee the
 provider's access policy will remain unchanged. The bridge does not insert
 fake tools: the caller must supply and execute real `bash`/`read` tools.
 
-The Zen adapter now sends streaming upstream and decodes SSE content, usage,
-and fragmented tool calls. The bridge can still return ordinary JSON or SSE
-to its own caller. A live two-turn bridge run returned a `bash` `pwd` call,
-then accepted its tool result and produced the final answer, both HTTP 200.
-An otherwise identical no-tools request returned the upstream 403 intact.
+The Zen adapter sends streaming upstream and decodes SSE content, usage, and
+fragmented tool calls. Muse Spark uses Zen's Responses endpoint instead of
+Chat Completions. The bridge can still return ordinary JSON or SSE to its own
+caller. A live two-turn bridge run returned a `bash` `pwd` call, then accepted
+its tool result and produced the final answer, both HTTP 200. The full
+cross-model results are in `docs/zen-free-model-benchmark.md`.
 
 Run without OpenCode (Go is the only build dependency):
 
@@ -68,7 +69,8 @@ UNREAL_HARNESS_LLM_PROVIDER=opencode-zen \
 
 Send `preamble.md` as the system message, and supply actual `bash` and
 `read` function tools. The bridge is a protocol adapter, not a tool executor;
-the calling agent must run returned tool calls and submit tool results.
+the calling agent must run returned tool calls and submit tool results. For
+automatic tool execution, use `unreal-agent-runner` with `opencode-zen`.
 The gate investigation and exact prompt are in `docs/zen-prompt-gate.md`.
 
 ## Endpoints

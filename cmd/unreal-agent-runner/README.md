@@ -39,8 +39,20 @@ unreal-agent-runner < request.json
 ```
 
 OpenAI is the default provider. Set `UNREAL_HARNESS_LLM_PROVIDER` to `openai`,
-`openai-codex`, `openrouter`, `fireworks`, or `ollama`, and
+`openai-codex`, `openrouter`, `fireworks`, `ollama`, or `opencode-zen`, and
 `UNREAL_HARNESS_LLM_MODEL` to choose a model.
+
+Zen needs no OpenCode installation. For its free tool-using models, the runner
+uses real `bash` and `read` tools and streams completions upstream. Example:
+
+```sh
+UNREAL_HARNESS_LLM_PROVIDER=opencode-zen \
+UNREAL_HARNESS_LLM_MODEL=mimo-v2.6-flash-free \
+unreal-agent-runner -p 'Read README.md and report its first heading.'
+```
+
+An optional `OPENCODE_ZEN_API_KEY` enables keyed access. Anonymous model
+availability and access rules are controlled by Zen and may change.
 
 Run `unreal-agent-runner -h` for options and the JSON request fields.
 
