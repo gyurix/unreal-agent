@@ -1,6 +1,7 @@
 package agentrunner
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/v2"
 	"io"
@@ -114,6 +115,7 @@ func TestRunnerCodexUsesSubscriptionWithoutAPIKey(t *testing.T) {
 func TestRunnerReportsTerminalProviderFailure(t *testing.T) {
 	for _, test := range []struct {
 		name       string
+		status     int
 		stream     bool
 		retryAfter string
 		body       string
@@ -122,23 +124,27 @@ func TestRunnerReportsTerminalProviderFailure(t *testing.T) {
 		{
 			name: "rate limit", retryAfter: "30",
 			body: `{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached."}}`,
-			want: map[string]any{"type": "error", "code": "rate_limit_exceeded", "retryable": true, "retry_after_seconds": 30.0},
+			want: map[string]any{"type": "error", "code": "rate_limit_exceeded", "retryable": true, "retry_after_seconds": 30.0, "http_status": 429.0},
 		},
 		{
 			name: "rate limit message hint",
 			body: `{"error":{"code":"rate_limit_exceeded","message":"Please try again in 1.2s."}}`,
-			want: map[string]any{"type": "error", "code": "rate_limit_exceeded", "retryable": true, "retry_after_seconds": 2.0},
+			want: map[string]any{"type": "error", "code": "rate_limit_exceeded", "retryable": true, "retry_after_seconds": 2.0, "http_status": 429.0},
 		},
 		{
 			name: "usage limit",
 			body: `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_in_seconds":5400}}`,
-			want: map[string]any{"type": "error", "code": "usage_limit_reached", "retryable": false, "retry_after_seconds": 5400.0},
+			want: map[string]any{"type": "error", "code": "usage_limit_reached", "retryable": false, "retry_after_seconds": 5400.0, "http_status": 429.0},
+		},
+		{
+			name: "bare unauthorized", status: http.StatusUnauthorized, body: "Unauthorized",
+			want: map[string]any{"type": "error", "retryable": false, "http_status": 401.0},
 		},
 		{
 			name: "streamed response failure", stream: true,
 			body: "data: " + `{"type":"response.failed","response":{"id":"r","status":"failed","output":[],` +
 				`"error":{"code":"rate_limit_exceeded","message":"Please try again in 3s."}}}` + "\n\n",
-			want: map[string]any{"type": "error", "code": "rate_limit_exceeded", "retryable": true, "retry_after_seconds": 3.0},
+			want: map[string]any{"type": "error", "code": "rate_limit_exceeded", "retryable": true, "retry_after_seconds": 3.0, "http_status": 200.0},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -149,7 +155,7 @@ func TestRunnerReportsTerminalProviderFailure(t *testing.T) {
 				if test.stream {
 					writer.Header().Set("Content-Type", "text/event-stream")
 				} else {
-					writer.WriteHeader(http.StatusTooManyRequests)
+					writer.WriteHeader(cmp.Or(test.status, http.StatusTooManyRequests))
 				}
 				_, _ = io.WriteString(writer, test.body)
 			}))

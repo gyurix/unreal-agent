@@ -34,7 +34,8 @@ Request schema (JSON object; unknown fields are rejected):
 A failed run ends stdout with {type: "error", message: string} and exits 1,
 including when the final model response failed. Provider failures also carry
 code (when known), retryable, and retry_after_seconds (when the provider sent a
-Retry-After header, a "try again in" hint, or a usage-limit reset time).
+Retry-After header, a "try again in" hint, or a usage-limit reset time), and
+http_status when known.
 `
 
 func writeUsage(flags *flag.FlagSet) error {

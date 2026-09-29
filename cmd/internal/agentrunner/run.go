@@ -108,6 +108,7 @@ type errorEvent struct {
 	Code              string `json:"code,omitempty"`
 	Retryable         *bool  `json:"retryable,omitempty"`
 	RetryAfterSeconds int64  `json:"retry_after_seconds,omitzero"`
+	HTTPStatus        int    `json:"http_status,omitzero"`
 }
 
 type sessionObserver struct {
@@ -146,6 +147,7 @@ func RunMain(
 		event.Code = cmp.Or(apiErr.Code, apiErr.Type)
 		event.Retryable = &apiErr.Retryable
 		event.RetryAfterSeconds = int64((apiErr.RetryAfter + time.Second - 1) / time.Second)
+		event.HTTPStatus = apiErr.StatusCode
 	}
 	encoded, encodeErr := json.Marshal(event)
 	if encodeErr != nil {
