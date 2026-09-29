@@ -117,6 +117,8 @@ type sessionObserver struct {
 
 	mu  sync.Mutex
 	err error
+	// lastResponse is the most recent model response persisted by this run.
+	lastResponse *sessionstore.ModelResponse
 }
 
 func RunMain(
@@ -488,7 +490,7 @@ func Run(
 	if coordinatorErr != nil {
 		return fmt.Errorf("run coordinator: %w", coordinatorErr)
 	}
-	return nil
+	return observer.FailureErr()
 }
 
 func resolveMaxAttempts(requested *int, getenv func(string) string) (int, error) {
@@ -745,6 +747,9 @@ func (observer *sessionObserver) Observe(sessionID session.ID, item sessionstore
 		observer.fail(err)
 		return
 	}
+	if response, ok := item.Data.(sessionstore.ModelResponse); ok {
+		observer.lastResponse = &response
+	}
 }
 
 func writeSessionItem(output io.Writer, item sessionstore.Item) error {
@@ -767,4 +772,15 @@ func (observer *sessionObserver) Err() error {
 	observer.mu.Lock()
 	defer observer.mu.Unlock()
 	return observer.err
+}
+
+// FailureErr reports a failed final model response as the provider error that ended the run.
+func (observer *sessionObserver) FailureErr() error {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if observer.lastResponse == nil || observer.lastResponse.Response.Failure == nil {
+		return nil
+	}
+	return fmt.Errorf("model response for turn %q failed: %w",
+		observer.lastResponse.TurnID, responsesapi.FailureError(*observer.lastResponse.Response.Failure))
 }

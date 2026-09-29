@@ -17,6 +17,7 @@ import (
 
 	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
+	"github.com/unreallabsai/unreal-agent/harness/llm/responsesapi"
 	"github.com/unreallabsai/unreal-agent/harness/operation"
 	"github.com/unreallabsai/unreal-agent/harness/session"
 	"github.com/unreallabsai/unreal-agent/harness/sessionstore"
@@ -110,6 +111,7 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 					returned = append(returned, response)
 					return copyLogResponse(response), nil
 				}}
+				returnedBefore := len(returned)
 				var stdout bytes.Buffer
 				var destination io.Writer = &stdout
 				if run == 0 && mode == 3 {
@@ -135,7 +137,13 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 						wantErr = outputFailure
 					}
 				}
-				if !errors.Is(err, wantErr) {
+				// A run whose final model response failed reports that failure.
+				finalFailed := responses[len(responses)-1].Failure != nil && returnedBefore < len(responses) && len(returned) == len(responses)
+				if wantErr == nil && finalFailed {
+					if apiErr, ok := errors.AsType[*responsesapi.APIError](err); !ok || apiErr.Code != "provider_failure" {
+						t.Fatalf("run %d: error = %v, want the final response failure", run, err)
+					}
+				} else if !errors.Is(err, wantErr) {
 					t.Fatalf("run %d: error = %v, want %v", run, err, wantErr)
 				}
 				if !client.closed {

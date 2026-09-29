@@ -114,6 +114,7 @@ func TestRunnerCodexUsesSubscriptionWithoutAPIKey(t *testing.T) {
 func TestRunnerReportsTerminalProviderFailure(t *testing.T) {
 	for _, test := range []struct {
 		name       string
+		stream     bool
 		retryAfter string
 		body       string
 		want       map[string]any
@@ -133,13 +134,23 @@ func TestRunnerReportsTerminalProviderFailure(t *testing.T) {
 			body: `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}`,
 			want: map[string]any{"type": "error", "code": "usage_limit_reached", "retryable": false},
 		},
+		{
+			name: "streamed response failure", stream: true,
+			body: "data: " + `{"type":"response.failed","response":{"id":"r","status":"failed","output":[],` +
+				`"error":{"code":"rate_limit_exceeded","message":"Please try again in 3s."}}}` + "\n\n",
+			want: map[string]any{"type": "error", "code": "rate_limit_exceeded", "retryable": true, "retry_after_seconds": 3.0},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 				if test.retryAfter != "" {
 					writer.Header().Set("Retry-After", test.retryAfter)
 				}
-				writer.WriteHeader(http.StatusTooManyRequests)
+				if test.stream {
+					writer.Header().Set("Content-Type", "text/event-stream")
+				} else {
+					writer.WriteHeader(http.StatusTooManyRequests)
+				}
 				_, _ = io.WriteString(writer, test.body)
 			}))
 			defer server.Close()
@@ -155,11 +166,14 @@ func TestRunnerReportsTerminalProviderFailure(t *testing.T) {
 				t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
 			}
 			lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+			if test.stream && !strings.Contains(lines[len(lines)-2], `"Kind":"model_response"`) {
+				t.Fatalf("failed response was not persisted before the error: %s", stdout.String())
+			}
 			var got map[string]any
 			if err := json.Unmarshal([]byte(lines[len(lines)-1]), &got); err != nil {
 				t.Fatal(err)
 			}
-			if message, _ := got["message"].(string); !strings.Contains(message, "create response: responses API") {
+			if message, _ := got["message"].(string); !strings.Contains(message, "responses API error") && !strings.Contains(message, "responses API request failed") {
 				t.Fatalf("message = %q", message)
 			}
 			delete(got, "message")

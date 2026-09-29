@@ -162,6 +162,14 @@ func (adapter *adapter) remoteRequest(body []byte, cacheKey string) primitives.R
 	return request
 }
 
+// FailureError describes a failed response as the provider error that ended it.
+func FailureError(failure llm.Failure) *APIError {
+	err := &APIError{StatusCode: http.StatusOK, Code: failure.Code, Message: failure.Message}
+	err.Retryable = retryableResponseError(err, nil)
+	err.RetryAfter = retryAfterHint(err, nil, time.Now())
+	return err
+}
+
 func providerError(statusCode int, body []byte) *APIError {
 	var envelope struct {
 		Error struct {
