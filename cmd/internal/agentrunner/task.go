@@ -179,7 +179,8 @@ func (taskBatchTranslator) TranslateResult(callID string, status tool.CallStatus
 			bounded, _ := operation.BoundOutput(state.TerminalResult, perTaskLimit)
 			output.WriteString(bounded)
 		case operation.StatusFailed, operation.StatusCanceled:
-			fmt.Fprintf(&output, "Subagent %s failed: %s", args.Name, state.TerminalError)
+			bounded, _ := operation.BoundOutput(fmt.Sprintf("Subagent %s failed: %s", args.Name, state.TerminalError), perTaskLimit)
+			output.WriteString(bounded)
 		case operation.StatusReady, operation.StatusAwaiting, operation.StatusCanceling:
 			fmt.Fprintf(&output, "Subagent %s still running.", args.Name)
 		default:

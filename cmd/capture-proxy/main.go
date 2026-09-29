@@ -3,6 +3,7 @@
 // with on-the-fly certificates signed by a local CA, records exact wire
 // bytes (headers in sent order plus bodies) for both directions, and
 // forwards to the real upstream. Traces are appended as JSONL to TRACE_DIR.
+// Traces contain unredacted credentials and payloads and must stay private.
 package main
 
 import (
@@ -76,20 +77,41 @@ func main() {
 }
 
 func run() int {
-	if err := os.MkdirAll(traceDir, 0o755); err != nil {
+	if err := os.MkdirAll(traceDir, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "capture-proxy: mkdir: %v\n", err)
+		return 1
+	}
+	info, err := os.Lstat(traceDir)
+	if err != nil || !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "capture-proxy: TRACE_DIR must be a real directory: %v\n", err)
+		return 1
+	}
+	if err := os.Chmod(traceDir, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "capture-proxy: restrict TRACE_DIR: %v\n", err)
 		return 1
 	}
 	caCert, caKey := loadCA(
 		getenv("MITM_CA_CERT", filepath.Join(traceDir, "mitm-ca.pem")),
 		getenv("MITM_CA_KEY", filepath.Join(traceDir, "mitm-ca-key.pem")),
 	)
-	fh, err := os.OpenFile(filepath.Join(traceDir, "wire.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	tracePath := filepath.Join(traceDir, "wire.jsonl")
+	if info, err := os.Lstat(tracePath); err == nil && !info.Mode().IsRegular() {
+		fmt.Fprintf(os.Stderr, "capture-proxy: trace path must be a regular file: %s\n", tracePath)
+		return 1
+	} else if err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "capture-proxy: inspect trace: %v\n", err)
+		return 1
+	}
+	fh, err := os.OpenFile(tracePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "capture-proxy: open trace: %v\n", err)
 		return 1
 	}
 	defer fh.Close()
+	if err := fh.Chmod(0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "capture-proxy: restrict trace: %v\n", err)
+		return 1
+	}
 	traceFH = fh
 
 	listener, err := net.Listen("tcp", listenAddr)
