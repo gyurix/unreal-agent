@@ -168,7 +168,7 @@ func TestRunMainHelp(t *testing.T) {
 				"$XDG_STATE_HOME/unreal-agent/sessions", "$HOME/.local/state/unreal-agent/sessions",
 				"optional session JSONL log directory; unset writes only to stdout",
 				"Request schema", "messages:", "role:", "content:", "message_id?:", "prompt:", "model:", "max_attempts:",
-				"system_prompt:", "system_prompt_append:", "preamble:", "thinking_level:", "session_id:", "disallowed_tools:", "extra_allowed_tools:", "include_partial_messages:",
+				"system_prompt:", "system_prompt_append:", "preamble:", "thinking_level:", "session_id:", "provider_routing:", "disallowed_tools:", "extra_allowed_tools:", "include_partial_messages:",
 			} {
 				if !strings.Contains(stderr.String(), want) {
 					t.Errorf("help missing %q: %s", want, stderr.String())

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"flag"
@@ -60,7 +61,9 @@ type Provider struct {
 	BaseURL           string
 	DefaultModel      string
 	APIKeyEnvironment string // Empty delegates authentication to NewClient.
-	NewClient         func(apiKey, baseURL string, maxAttempts int, getenv func(string) string) (Client, error)
+	ProviderRouting   bool   // Accepts the request's provider_routing object.
+	// NewClient receives providerRouting only when ProviderRouting is set.
+	NewClient func(apiKey, baseURL string, maxAttempts int, getenv func(string) string, providerRouting jsontext.Value) (Client, error)
 }
 
 type Request struct {
@@ -76,6 +79,15 @@ type Request struct {
 	IncludePartialMessages *bool            `json:"include_partial_messages"`
 	ExtraAllowedTools      []string         `json:"extra_allowed_tools"`
 	DisallowedTools        []string         `json:"disallowed_tools"`
+	ProviderRouting        jsontext.Value   `json:"provider_routing,omitzero"`
+}
+
+// providerRouting returns the request's provider_routing, treating null as absent.
+func (parsed Request) providerRouting() jsontext.Value {
+	if parsed.ProviderRouting.Kind() == 'n' {
+		return nil
+	}
+	return parsed.ProviderRouting
 }
 
 type RequestMessage struct {
@@ -284,6 +296,9 @@ func Run(
 	if err != nil {
 		return err
 	}
+	if len(parsed.providerRouting()) != 0 && !selected.ProviderRouting {
+		return fmt.Errorf("provider_routing is not supported by provider %q", selected.Name)
+	}
 	configuredBaseURL := strings.TrimSpace(getenv(llmBaseURLEnvironment))
 	if configuredBaseURL == "" {
 		configuredBaseURL = selected.BaseURL
@@ -313,7 +328,7 @@ func Run(
 			)
 		}
 	}
-	client, err := selected.NewClient(apiKey, configuredBaseURL, maxAttempts, getenv)
+	client, err := selected.NewClient(apiKey, configuredBaseURL, maxAttempts, getenv, parsed.providerRouting())
 	if err != nil {
 		return fmt.Errorf("create %s client: %w", selected.Name, err)
 	}
@@ -660,6 +675,9 @@ func validateRequest(parsed Request) ([]RequestMessage, error) {
 		default:
 			return nil, errors.New("thinking_level must be one of: low, medium, high, xhigh, max")
 		}
+	}
+	if routing := parsed.providerRouting(); len(routing) != 0 && routing.Kind() != '{' {
+		return nil, errors.New("provider_routing must be a JSON object")
 	}
 	for _, name := range append(parsed.ExtraAllowedTools, parsed.DisallowedTools...) {
 		if strings.TrimSpace(name) == "" {

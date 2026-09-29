@@ -26,6 +26,9 @@ Request schema (JSON object; unknown fields are rejected):
   thinking_level: "low" | "medium" | "high" | "xhigh" | "max" (optional; default "high")
   session_id: non-empty string (optional)
     Creates or resumes a persisted session.
+  provider_routing: object (optional; openrouter provider only)
+    Sent verbatim as the OpenRouter request's provider preferences, e.g.
+    {"order": ["deepinfra/fp8"], "allow_fallbacks": true, "sort": "price"}.
   disallowed_tools: array of non-empty strings (optional)
     Static tool names excluded from model context and execution.
   extra_allowed_tools: array of non-empty strings (optional; accepted but ignored)

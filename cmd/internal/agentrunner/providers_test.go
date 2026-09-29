@@ -3,6 +3,7 @@ package agentrunner
 import (
 	"cmp"
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"io"
 	"maps"
@@ -185,6 +186,57 @@ func TestRunnerReportsTerminalProviderFailure(t *testing.T) {
 			delete(got, "message")
 			if !maps.Equal(got, test.want) {
 				t.Fatalf("error event = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRunnerProviderRouting(t *testing.T) {
+	const routing = `{"order":["deepinfra/fp8","novita"],"quantizations":["fp8"],"allow_fallbacks":true,"sort":"price"}`
+	for _, test := range []struct {
+		name, provider, routing, wantErr string
+	}{
+		{name: "openrouter", provider: "openrouter", routing: routing},
+		{name: "null is absent", provider: "openai", routing: "null"},
+		{name: "other provider", provider: "openai", routing: routing, wantErr: `provider_routing is not supported by provider "openai"`},
+		{name: "not an object", provider: "openrouter", routing: `["deepinfra"]`, wantErr: "provider_routing must be a JSON object"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bodies := make(chan map[string]jsontext.Value, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var body map[string]jsontext.Value
+				if err := json.UnmarshalRead(request.Body, &body); err != nil {
+					t.Error(err)
+				}
+				bodies <- body
+				writer.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[]}}\n\n")
+			}))
+			defer server.Close()
+			var stdout, stderr strings.Builder
+			code := RunMain(t.Context(), []string{"-workspace", t.TempDir(), "-session-directory", t.TempDir()}, func(name string) string {
+				return map[string]string{
+					"UNREAL_HARNESS_LLM_PROVIDER": test.provider,
+					"UNREAL_HARNESS_LLM_BASE_URL": server.URL,
+					"UNREAL_HARNESS_LLM_API_KEY":  "test-key",
+				}[name]
+			}, func() []string { return nil }, strings.NewReader(`{"prompt":"hello","model":"test","provider_routing":`+test.routing+`}`),
+				&stdout, &stderr, Config{Name: "unreal-agent-runner", ParseRequest: parseTestRequest, Providers: DefaultProviders()})
+			if test.wantErr != "" {
+				if code != 1 || !strings.Contains(stderr.String(), test.wantErr) {
+					t.Fatalf("exit = %d, stderr = %q, want %q", code, stderr.String(), test.wantErr)
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+			}
+			body := <-bodies
+			if test.provider == "openrouter" && string(body["provider"]) != routing {
+				t.Fatalf("provider = %s, want %s", body["provider"], routing)
+			}
+			if _, ok := body["provider"]; test.provider != "openrouter" && ok {
+				t.Fatalf("provider routing sent to %s: %s", test.provider, body["provider"])
 			}
 		})
 	}

@@ -171,7 +171,7 @@ func TestRunMainUsesProviderAuthenticationConfiguration(t *testing.T) {
 			created := false
 			providers := []Provider{{
 				Name: "custom", DefaultModel: "test-model", APIKeyEnvironment: test.keyEnvironment,
-				NewClient: func(apiKey, _ string, _ int, _ func(string) string) (Client, error) {
+				NewClient: func(apiKey, _ string, _ int, _ func(string) string, _ jsontext.Value) (Client, error) {
 					created = true
 					if apiKey != test.wantKey {
 						return nil, errors.New("unexpected API key")
@@ -211,14 +211,14 @@ func TestRunMainUsesLLMConfigurationFromEnvironment(t *testing.T) {
 		{
 			Name:              "openai",
 			APIKeyEnvironment: "OPENAI_API_KEY",
-			NewClient: func(_ string, _ string, _ int, _ func(string) string) (Client, error) {
+			NewClient: func(_ string, _ string, _ int, _ func(string) string, _ jsontext.Value) (Client, error) {
 				return nil, errors.New("default provider selected")
 			},
 		},
 		{
 			Name: "openrouter", BaseURL: "https://default.example/v1", DefaultModel: "router-model",
 			APIKeyEnvironment: "OPENROUTER_API_KEY",
-			NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string) (Client, error) {
+			NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string, _ jsontext.Value) (Client, error) {
 				if apiKey != "custom-secret" || baseURL != "https://custom.example/v1" || maxAttempts != 2 {
 					return nil, errors.New("unexpected OpenRouter configuration")
 				}
@@ -462,7 +462,7 @@ func testConfig(client Client) Config {
 		Name: "openai", BaseURL: "https://example.com",
 		DefaultModel:      "gpt-default",
 		APIKeyEnvironment: "OPENAI_API_KEY",
-		NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string) (Client, error) {
+		NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string, _ jsontext.Value) (Client, error) {
 			if apiKey != "secret" || baseURL != "https://example.com" || maxAttempts != 5 {
 				return nil, errors.New("unexpected provider configuration")
 			}
